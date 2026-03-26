@@ -8,9 +8,11 @@ function getDB() {
   if (!getApps().length) {
     initializeApp({
       credential: cert({
-        projectId:    process.env.FIREBASE_PROJECT_ID,
-        clientEmail:  process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: Buffer.from(process.env.FIREBASE_PRIVATE_KEY_B64 || '', 'base64').toString('utf8'),
+        projectId:   process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey:  process.env.FIREBASE_PRIVATE_KEY_B64
+          ? Buffer.from(process.env.FIREBASE_PRIVATE_KEY_B64, 'base64').toString('utf8')
+          : process.env.FIREBASE_PRIVATE_KEY?.split('\\n').join('\n'),
       }),
     });
   }
