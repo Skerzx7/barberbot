@@ -191,14 +191,14 @@ export default function Mensajes() {
                   disabled={loadingBot}
                   style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: botEnabled ? 'var(--green-bg)' : 'var(--elevated)', color: botEnabled ? 'var(--green)' : 'var(--muted)', border: botEnabled ? '1px solid var(--green-b)' : '1px solid var(--b-soft)', opacity: loadingBot ? 0.5 : 1, transition:'all 200ms' }}
                 >
-                  🤖 {botEnabled ? 'Bot ON' : 'Bot OFF'}
+                   {botEnabled ? 'Bot ON' : 'Bot OFF'}
                 </button>
               </div>
 
               {/* Info bot desactivado */}
               {!botEnabled && (
                 <div style={{ padding:'8px 16px', background:'var(--gold-bg)', borderBottom:'1px solid var(--gold-b)', fontSize:'0.75rem', color:'var(--gold)', display:'flex', alignItems:'center', gap:6 }}>
-                  ✏️ Modo manual — estás respondiendo como Zaira
+                  ✏️ Modo manual — estás respondiendo como Zaira, no como bot
                 </div>
               )}
 
