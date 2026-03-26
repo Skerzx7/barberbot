@@ -1,4 +1,6 @@
 import { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth } from '../firebase';
 import {
   listenClientes, listenCitas, listenServicios,
   crearCliente, actualizarClienteFS, eliminarClienteFS,
@@ -17,12 +19,33 @@ export function AppProvider({ children }) {
   const [loadingData, setLoadingData] = useState(true);
 
   useEffect(() => {
-    let loadedCount = 0;
-    const checkLoaded = () => { loadedCount++; if (loadedCount >= 3) setLoadingData(false); };
-    const unsubClientes  = listenClientes(data  => { setClientes(data);  checkLoaded(); });
-    const unsubCitas     = listenCitas(data      => { setCitas(data);     checkLoaded(); });
-    const unsubServicios = listenServicios(data  => { setServicios(data); checkLoaded(); });
-    return () => { unsubClientes(); unsubCitas(); unsubServicios(); };
+    let unsubClientes  = () => {};
+    let unsubCitas     = () => {};
+    let unsubServicios = () => {};
+
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        setLoadingData(false);
+        return;
+      }
+
+      let loadedCount = 0;
+      const checkLoaded = () => {
+        loadedCount++;
+        if (loadedCount >= 3) setLoadingData(false);
+      };
+
+      unsubClientes  = listenClientes(data  => { setClientes(data);  checkLoaded(); });
+      unsubCitas     = listenCitas(data      => { setCitas(data);     checkLoaded(); });
+      unsubServicios = listenServicios(data  => { setServicios(data); checkLoaded(); });
+    });
+
+    return () => {
+      unsubAuth();
+      unsubClientes();
+      unsubCitas();
+      unsubServicios();
+    };
   }, []);
 
   // ── Toast ────────────────────────────────────────────────────────
