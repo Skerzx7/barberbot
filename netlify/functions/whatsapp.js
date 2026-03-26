@@ -36,25 +36,31 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
 
   try {
-    const params       = new URLSearchParams(event.body);
-    const mensajeTexto = params.get('Body') || '';
-    const numeroFrom   = params.get('From') || '';
+    const params      = new URLSearchParams(event.body);
+    const mensaje     = params.get('Body') || '';
+    const from        = params.get('From') || '';
 
-    console.log(`Mensaje de ${numeroFrom}: ${mensajeTexto}`);
+    console.log(`Mensaje de ${from}: ${mensaje}`);
 
-    const respuesta = await generarRespuesta(mensajeTexto);
+    const respuesta = await generarRespuesta(mensaje);
 
     console.log(`Respuesta: ${respuesta}`);
 
-    const numeroFrom = params.get('From') || '';
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${numeroFrom}"><Body>${respuesta}</Body></Message></Response>`;
-    console.log('TwiML:', twiml);
-    return { statusCode: 200, headers: { 'Content-Type': 'text/xml' }, body: twiml };
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>`;
 
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'text/xml' },
+      body: twiml,
+    };
 
   } catch (err) {
     console.error('Error en webhook:', err);
     const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>Hola! En este momento no podemos responder. Intenta más tarde 💅</Body></Message></Response>`;
-    return { statusCode: 200, headers: { 'Content-Type': 'text/xml' }, body: twiml };
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'text/xml' },
+      body: twiml,
+    };
   }
 };
