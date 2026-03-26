@@ -46,7 +46,8 @@ exports.handler = async (event) => {
 
     console.log(`Respuesta: ${respuesta}`);
 
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>${respuesta}</Body></Message></Response>`;
+    const numeroFrom = params.get('From') || '';
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${numeroFrom}"><Body>${respuesta}</Body></Message></Response>`;
     console.log('TwiML:', twiml);
     return { statusCode: 200, headers: { 'Content-Type': 'text/xml' }, body: twiml };
 
