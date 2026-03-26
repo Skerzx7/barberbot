@@ -20,7 +20,7 @@ export function AuthProvider({ children }) {
 
   const profile = {
     nombre:        'Zaira',
-    nombreNegocio: 'Barbería Zaira',
+    nombreNegocio: 'Estetica Zaira',
   };
 
   useEffect(() => {

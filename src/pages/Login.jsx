@@ -129,7 +129,7 @@ export default function Login() {
         </div>
 
         <p style={{ fontSize:'0.68rem', color:'var(--muted)', letterSpacing:'0.04em' }}>
-          BARBERÍA ZAIRA © {new Date().getFullYear()}
+          Estetica Zaira © {new Date().getFullYear()}
         </p>
       </div>
 
