@@ -99,12 +99,27 @@ export default function Mensajes() {
     await setDoc(doc(db, 'config_bot', selectedId), { activo: nuevoEstado }, { merge: true });
   };
 
-  const handleSend = async () => {
+    const handleSend = async () => {
     const texto = input.trim();
     if (!texto || !selectedId) return;
     setInput('');
     inputRef.current?.focus();
-    await enviarMensaje(selectedId, { de:'owner', texto, canal:'app' });
+
+    // Guardar en Firestore
+    await enviarMensaje(selectedId, { de:'owner', texto, canal: botEnabled ? 'app' : 'whatsapp' });
+
+    // Si bot está OFF y cliente tiene teléfono, mandar por WhatsApp
+    if (!botEnabled && cliente?.telefono) {
+      try {
+        await fetch('/.netlify/functions/send-whatsapp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ telefono: cliente.telefono, mensaje: texto }),
+        });
+      } catch (err) {
+        console.error('Error enviando WhatsApp:', err);
+      }
+    }
   };
 
   const handleBotReply = async () => {
