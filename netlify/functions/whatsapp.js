@@ -7,11 +7,14 @@ function normalizarTel(tel) {
   return tel.replace(/\D/g, '').replace(/^521?/, '').slice(-10);
 }
 
-// ── Timezone Mexico ───────────────────────────────────────────────
 function hoyMX() {
   const mx = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
   mx.setHours(0, 0, 0, 0);
   return mx;
+}
+
+function fechaEsPasada(fechaStr) {
+  return new Date(fechaStr + 'T12:00:00') < hoyMX();
 }
 
 // ── Firestore REST ────────────────────────────────────────────────
@@ -84,15 +87,15 @@ async function notificarAdmins(msg) {
 
 // ── Admin ─────────────────────────────────────────────────────────
 async function esAdmin(tel) {
-  try { const res = await fsGet(`admin_sesion/${tel}`); return parseDoc(res)?.activo === true; } catch { return false; }
+  try { return parseDoc(await fsGet(`admin_sesion/${tel}`))?.activo === true; } catch { return false; }
 }
 async function setAdmin(tel, activo) { await fsSet(`admin_sesion/${tel}`, toFields({ activo })); }
 async function getAdminBotOn(tel) {
-  try { const res = await fsGet(`admin_bot/${tel}`); return parseDoc(res)?.activo === true; } catch { return false; }
+  try { return parseDoc(await fsGet(`admin_bot/${tel}`))?.activo === true; } catch { return false; }
 }
 async function setAdminBotOn(tel, activo) { await fsSet(`admin_bot/${tel}`, toFields({ activo })); }
 async function getAdminModoPrueba(tel) {
-  try { const res = await fsGet(`admin_bot/${tel}`); return parseDoc(res)?.modoPrueba === true; } catch { return false; }
+  try { return parseDoc(await fsGet(`admin_bot/${tel}`))?.modoPrueba === true; } catch { return false; }
 }
 async function setAdminModoPrueba(tel, activo) {
   await fsSet(`admin_bot/${tel}`, toFields({ activo: true, modoPrueba: activo }));
@@ -101,8 +104,7 @@ async function setAdminModoPrueba(tel, activo) {
 // ── Estado conversación ───────────────────────────────────────────
 async function getEstado(clienteId) {
   try {
-    const res = await fsGet(`conversacion_estado/${clienteId}`);
-    const doc = parseDoc(res);
+    const doc = parseDoc(await fsGet(`conversacion_estado/${clienteId}`));
     if (doc) return doc;
   } catch {}
   return { paso: 'inicio', ultimoMensaje: '' };
@@ -123,10 +125,8 @@ async function setEstado(clienteId, estado) {
 async function guardarMsg(clienteId, de, texto) {
   if (!clienteId) return;
   await fsPost(`clientes/${clienteId}/mensajes`, {
-    de:        { stringValue: de },
-    texto:     { stringValue: texto },
-    canal:     { stringValue: 'whatsapp' },
-    timestamp: { timestampValue: new Date().toISOString() },
+    de: { stringValue: de }, texto: { stringValue: texto },
+    canal: { stringValue: 'whatsapp' }, timestamp: { timestampValue: new Date().toISOString() },
   });
 }
 
@@ -134,8 +134,7 @@ async function guardarMsg(clienteId, de, texto) {
 async function getHistorial(clienteId) {
   try {
     const res  = await fsGet(`clientes/${clienteId}/mensajes`);
-    const docs = (res.documents || []).map(parseDoc).filter(Boolean);
-    return docs
+    return (res.documents || []).map(parseDoc).filter(Boolean)
       .sort((a, b) => new Date(a.timestamp||0) - new Date(b.timestamp||0))
       .slice(-10)
       .map(m => ({ role: m.de === 'client' ? 'user' : 'assistant', content: m.texto }))
@@ -143,23 +142,36 @@ async function getHistorial(clienteId) {
   } catch { return []; }
 }
 
+// ── Diccionario mexicano ──────────────────────────────────────────
+// CONFIRMACIONES — el cliente dice sí con palabras mexicanas
+const PALABRAS_SI = /^(sí|si|yes|simon|simón|seimón|nel\s+es\s+broma|dale|ok|okey|claro|va|órale|orale|andale|ándale|sale|np|perfecto|listo|chido|chale\s+va|éso|ese|va\s+que\s+va|ya\s+va|nel\s+mentira\s+si|nel\s+jk\s+si|con\s+todo|échale|echale|de\s+una|de\s+volada|simona|nel\s+es\s+broma\s+si|aceptado|confirmo|correcto|exacto|así\s+es|así|asina|ta\s+bien|ta\s+bueno|tá\s+bien|mande|cómo\s+no|por\s+supuesto|seguro|a\s+huevo|pos\s+sí|pos\s+si|pus\s+si|pues\s+si|bueno|ta|tá)$/i;
+
+// NEGACIONES — el cliente dice no
+const PALABRAS_NO = /^(no|nel|nop|nope|nel\s+pastel|para\s+nada|negativo|nombre|nones|ni\s+madres|ni\s+modo|mejor\s+no|nombre\s+que\s+va|nah|este\s+no|pos\s+no|pus\s+no|pues\s+no|ta\s+mal|de\s+ninguna\s+manera)$/i;
+
+// SALUDOS mexicanos
+const PALABRAS_SALUDO = /^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas\s+tardes|buenas\s+noches|buenos\s+días|buenos\s+dias|qué\s+onda|que\s+onda|quiubo|quiúbo|quiubole|qué\s+pedo|que\s+pedo|qué\s+rollo|que\s+rollo|qué\s+tal|que\s+tal|qué\s+hubo|que\s+hubo|qué\s+fue|buenas\s+y\s+santas|ey|oye|oe|oeee|épale|epale|ey\s+tú|qué\s+pasó|ke\s+onda|kien\s+es|wey|güey|wei)/i;
+
+// DESPEDIDAS
+const PALABRAS_DESPEDIDA = /^(gracias|ok|okey|de\s+nada|hasta\s+luego|bye|adios|adiós|listo|perfecto|excelente|genial|👍|np|sale|va|hasta\s+la\s+vista|nos\s+vemos|cuídate|cuídate\s+mucho|ahí\s+nos\s+vemos|ahí\s+nos\s+vidrios|órale\s+pues|orale\s+pues|con\s+permiso|provecho|gracias\s+wey|gracias\s+güey|muchas\s+gracias|mil\s+gracias|chao|chau|hasta\s+pronto)$/i;
+
 // ── Fecha/hora ────────────────────────────────────────────────────
 function parsearFecha(texto) {
   const t   = texto.toLowerCase().trim();
   const hoy = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
   const dias = { lunes:1, martes:2, 'miércoles':3, miercoles:3, jueves:4, viernes:5, 'sábado':6, sabado:6 };
 
-  if (t.includes('hoy')) return formatFecha(hoy);
+  if (t.includes('hoy') || t.includes('ahorita') || t.includes('ahorita mismo')) return formatFecha(hoy);
   if (t.includes('pasado mañana') || t.includes('pasado manana')) {
     const m = new Date(hoy); m.setDate(m.getDate()+2); return formatFecha(m);
   }
-  if (t.includes('mañana') || t.includes('manana')) {
+  if (t.includes('mañana') || t.includes('manana') || t.includes('al rato') || t.includes('alrato')) {
     const m = new Date(hoy); m.setDate(m.getDate()+1); return formatFecha(m);
   }
   for (const [nombre, num] of Object.entries(dias)) {
     if (t.includes(nombre)) {
       const d       = new Date(hoy);
-      const proximo = t.includes('próximo') || t.includes('proximo') || t.includes('que viene') || t.includes('siguiente');
+      const proximo = t.includes('próximo') || t.includes('proximo') || t.includes('que viene') || t.includes('siguiente') || t.includes('próxima') || t.includes('proxima');
       const diff    = (num - d.getDay() + 7) % 7 || 7;
       d.setDate(d.getDate() + diff + (proximo ? 7 : 0));
       return formatFecha(d);
@@ -171,7 +183,6 @@ function parsearFecha(texto) {
       const match = t.match(/(\d{1,2})/);
       if (match) {
         const d = new Date(hoy.getFullYear(), num, parseInt(match[1]));
-        // FIX: si la fecha ya pasó, ir al siguiente año
         if (d < hoy) d.setFullYear(d.getFullYear()+1);
         return formatFecha(d);
       }
@@ -196,12 +207,6 @@ function fechaLegible(fs) {
   const dias = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
   const mes  = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   return `${dias[d.getDay()]} ${d.getDate()} de ${mes[d.getMonth()]}`;
-}
-
-// FIX: validar que fecha no sea pasada usando timezone Mexico
-function fechaEsPasada(fechaStr) {
-  const d    = new Date(fechaStr + 'T12:00:00');
-  return d < hoyMX();
 }
 
 function parsearHora(texto) {
@@ -273,35 +278,40 @@ async function cancelarCitasPendientes(clienteId) {
 async function respuestaInteligente(mensaje, historial, cliente, estado, servicios) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const svcsInfo  = servicios.map(s => `${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`).join('\n');
+  const hoyStr    = formatFecha(new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' })));
   const estadoInfo = estado.paso !== 'inicio'
-    ? `Paso actual: ${estado.paso}. Servicio: ${estado.servicio||'ninguno'}. Fecha: ${estado.fechaStr||'ninguna'}. Hora: ${estado.hora||'ninguna'}.`
+    ? `Paso: ${estado.paso}. Servicio: ${estado.servicio||'ninguno'}. Fecha: ${estado.fechaStr||'ninguna'}. Hora: ${estado.hora||'ninguna'}.`
     : '';
-
-  const hoyStr = formatFecha(new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' })));
 
   const system = `Eres Zai, asistente de WhatsApp de Barbería Zaira en México.
 
-SERVICIOS:
-${svcsInfo}
-
+SERVICIOS: ${svcsInfo}
 HORARIO: Lunes a sábado 9am a 7pm.
-HOY ES: ${hoyStr}
+HOY: ${hoyStr}
 CLIENTE: ${cliente.nombre}
 ${estadoInfo}
 
+JERGA MEXICANA que debes entender:
+- Confirmaciones: simón, simon, sale, va, órale, ándale, chido, a huevo, de una, con todo, pos sí, ta bien, école
+- Negaciones: nel, nop, nombre, nones, nel pastel, pos no, ni modo
+- Saludos: qué onda, quiubo, qué pedo, qué rollo, qué tal, épale, ey
+- Niños: morrito, chamaco, escuincle, chavo, morro, nene
+- Cambiar/mover: tronar, cambiar de opinión, me arrepentí, de volada lo cambiamos
+- Rápido/ya: ahorita, de volada, al tiro, ya mero, ya merito
+- Despedidas: ahí nos vemos, cuídate, nos vemos, orale pues
+
 REGLAS:
 - Habla en español mexicano natural, sin exagerar
-- NUNCA menciones links ni páginas web
-- NUNCA inventes precios que no estén en la lista
+- NUNCA menciones links ni páginas web  
+- NUNCA inventes precios
 - Las fechas NUNCA pueden ser anteriores a hoy (${hoyStr})
-- Si quieren cancelar o reagendar, detecta la intención
 - Responde SOLO con JSON sin texto adicional:
 {
-  "intencion": "cancelar" | "reagendar" | "agendar" | "cambiar_servicio" | "disponibilidad" | "info" | "saludo" | "otro",
-  "servicio": "nombre exacto del servicio o null",
-  "fechaStr": "YYYY-MM-DD o null (nunca anterior a hoy)",
+  "intencion": "cancelar"|"reagendar"|"agendar"|"cambiar_servicio"|"disponibilidad"|"info"|"saludo"|"despedida"|"otro",
+  "servicio": "nombre exacto o null",
+  "fechaStr": "YYYY-MM-DD o null",
   "hora": "HH:MM o null",
-  "respuesta": "mensaje corto para el cliente, máximo 2 oraciones"
+  "respuesta": "mensaje corto, máximo 2 oraciones, tono mexicano casual"
 }`;
 
   try {
@@ -309,25 +319,27 @@ REGLAS:
       model: 'claude-sonnet-4-20250514', max_tokens: 300, system,
       messages: [...historial, { role: 'user', content: mensaje }],
     });
-    const text  = response.content[0]?.text?.trim() || '{}';
-    const clean = text.replace(/```json|```/g, '').trim();
+    const text   = response.content[0]?.text?.trim() || '{}';
+    const clean  = text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
-    // FIX: validar que la fecha que devuelve Claude no sea pasada
-    if (parsed.fechaStr && fechaEsPasada(parsed.fechaStr)) {
-      parsed.fechaStr = null;
-    }
+    if (parsed.fechaStr && fechaEsPasada(parsed.fechaStr)) parsed.fechaStr = null;
     return parsed;
   } catch(e) {
     console.error('Claude error:', e);
-    return { intencion: 'otro', respuesta: '¿Me puedes repetir? No te entendí bien.' };
+    return { intencion: 'otro', respuesta: null };
   }
 }
 
 function esPreguntaDisponibilidad(t) {
   return (
-    (t.includes('tendr') || t.includes('hay') || t.includes('tienen') || t.includes('habrá') || t.includes('habra')) &&
-    (t.includes('cita') || t.includes('lugar') || t.includes('espacio') || t.includes('horario') || t.includes('disponib'))
+    (t.includes('tendr') || t.includes('hay') || t.includes('tienen') || t.includes('habrá') || t.includes('habra') || t.includes('tienes')) &&
+    (t.includes('cita') || t.includes('lugar') || t.includes('espacio') || t.includes('horario') || t.includes('disponib') || t.includes('hueco'))
   );
+}
+
+// Función helper para armar confirmación
+function textoConfirmacion(emoji, servicio, fechaStr, hora, precio) {
+  return `Confirma tu cita:\n\n${emoji||'✂️'} ${servicio}\n📅 ${fechaLegible(fechaStr)}\n⏰ ${horaLegible(hora)}\n💰 $${precio}\n\n¿Va? (sí/no)`;
 }
 
 // ── Comandos admin ────────────────────────────────────────────────
@@ -349,8 +361,8 @@ async function procesarComandoAdmin(cmd, tel) {
   if (c === '/mañana' || c === '/manana') {
     const mx = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
     mx.setDate(mx.getDate()+1);
-    const str = formatFecha(mx);
-    const res = await fsGet('citas');
+    const str   = formatFecha(mx);
+    const res   = await fsGet('citas');
     const lista = (res.documents||[]).map(parseDoc).filter(Boolean)
       .filter(c => c.fechaStr === str && c.estado !== 'cancelled')
       .sort((a,b) => (a.hora||'').localeCompare(b.hora||''));
@@ -367,34 +379,40 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   const t     = mensaje.toLowerCase().trim();
   const ahora = new Date();
 
-  const minutos   = estado.ultimoMensaje
-    ? (ahora.getTime() - new Date(estado.ultimoMensaje).getTime()) / 60000
-    : 999;
+  const minutos     = estado.ultimoMensaje ? (ahora.getTime() - new Date(estado.ultimoMensaje).getTime()) / 60000 : 999;
   const saludar     = !estado.ultimoMensaje || minutos > 240;
   const esDesconocido = !cliente?.nombre || cliente.nombre === 'Desconocid@';
   const nombre      = !esDesconocido ? ` ${cliente.nombre.split(' ')[0]}` : '';
   const saludo      = saludar ? `Hola${nombre}! 😊\n\n` : '';
 
-  const svcs      = servicios.filter(s => s.nombre);
-  // FIX: lista sin precio en los flujos, solo nombre y emoji
+  const svcs           = servicios.filter(s => s.nombre);
   const listaSvcs      = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`).join('\n');
-  const listaSvcsSinPrecio = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}`).join('\n');
-  const infoEx    = extraerInfoCita(mensaje, svcs);
+  const listaSinPrecio = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}`).join('\n');
+  const infoEx         = extraerInfoCita(mensaje, svcs);
 
-  // Helpers de confirmación
-  const confirmarCita = (emoji, servicio, fechaStr, hora, precio, conPrecio = true) =>
-    `Confirma tu cita:\n\n${emoji||'✂️'} ${servicio}\n📅 ${fechaLegible(fechaStr)}\n⏰ ${horaLegible(hora)}${conPrecio ? `\n💰 $${precio}` : ''}\n\n¿Va? (sí/no)`;
+  // FIX: detectar saludo casual y resetear estado trabado
+  const esSaludoCasual = PALABRAS_SALUDO.test(t) || t.length <= 8;
+  if (esSaludoCasual && estado.paso !== 'confirmando') {
+    // Si el estado estaba trabado en algo que no sea confirmando, resetear
+    if (estado.paso !== 'inicio') {
+      await setEstado(cliente.id, { paso: 'inicio' });
+    }
+    if (saludar) {
+      return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
+    }
+    return `¿En qué te puedo ayudar? 😊`;
+  }
 
   // ── Disponibilidad ────────────────────────────────────────────
   if (esPreguntaDisponibilidad(t)) {
     const fecha = parsearFecha(t);
     if (fecha) {
+      if (fechaEsPasada(fecha)) return `Esa fecha ya pasó 😅 ¿Para cuándo quieres?`;
       const d = new Date(fecha + 'T12:00:00');
       if (d.getDay() === 0) return `Los domingos no atendemos. De lunes a sábado de 9am a 7pm 😊`;
-      if (fechaEsPasada(fecha)) return `Esa fecha ya pasó 😅 ¿Para cuándo quieres?`;
-      return `Sí hay horarios disponibles el ${fechaLegible(fecha)} 😊 ¿Te agendo una cita?`;
+      return `Sí hay horarios el ${fechaLegible(fecha)} 😊 ¿Te agendo una cita?`;
     }
-    return `Sí tenemos horarios disponibles de lunes a sábado de 9am a 7pm 😊 ¿Para qué día quieres?`;
+    return `Sí tenemos horarios de lunes a sábado de 9am a 7pm 😊 ¿Para qué día quieres?`;
   }
 
   // ── ESPERANDO SERVICIO ────────────────────────────────────────
@@ -406,8 +424,9 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       if (idx >= 0 && idx < svcs.length) svc = svcs[idx];
     } else {
       svc = svcs.find(s => s.nombre.toLowerCase().split(' ').some(p => p.length > 3 && t.includes(p)));
-      if (!svc && (t.includes('niño') || t.includes('nino') || t.includes('morrito') || t.includes('chamaco') || t.includes('chavo') || t.includes('morro'))) {
-        svc = svcs.find(s => s.nombre.toLowerCase().includes('niño') || s.nombre.toLowerCase().includes('nino'));
+      // Palabras mexicanas para niños
+      if (!svc && (t.includes('niño') || t.includes('nino') || t.includes('morrito') || t.includes('chamaco') || t.includes('chavo') || t.includes('morro') || t.includes('escuincle') || t.includes('nene') || t.includes('peque'))) {
+        svc = svcs.find(s => s.nombre.toLowerCase().includes('niño') || s.nombre.toLowerCase().includes('nino') || s.nombre.toLowerCase().includes('niños'));
       }
     }
     if (!svc) {
@@ -418,9 +437,9 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       }
       if (infoEx.fechaStr) {
         await setEstado(cliente.id, { ...estado, fechaStr: infoEx.fechaStr });
-        return `No entendí el servicio 😅 ¿Cuál te interesa?\n\n${listaSvcsSinPrecio}`;
+        return `No entendí el servicio 😅 ¿Cuál te interesa?\n\n${listaSinPrecio}`;
       }
-      return `No entendí el servicio 😅 Elige un número o escribe el nombre:\n\n${listaSvcsSinPrecio}`;
+      return `No entendí el servicio 😅 Elige un número o escribe el nombre:\n\n${listaSinPrecio}`;
     }
     const nuevo = { paso:'esperando_fecha', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️' };
     if (estado.fechaStr) nuevo.fechaStr = estado.fechaStr;
@@ -430,7 +449,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       if (!ok) { nuevo.paso = 'esperando_hora'; nuevo.hora = ''; await setEstado(cliente.id, nuevo); return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`; }
       nuevo.paso = 'confirmando';
       await setEstado(cliente.id, nuevo);
-      return confirmarCita(nuevo.emoji, nuevo.servicio, nuevo.fechaStr, nuevo.hora, nuevo.precio);
+      return textoConfirmacion(nuevo.emoji, nuevo.servicio, nuevo.fechaStr, nuevo.hora, nuevo.precio);
     }
     await setEstado(cliente.id, nuevo);
     return nuevo.fechaStr
@@ -443,7 +462,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
     const fechaStr = parsearFecha(t);
     if (!fechaStr) {
       const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
-      if (ia.fechaStr) {
+      if (ia?.fechaStr) {
         if (fechaEsPasada(ia.fechaStr)) return `Esa fecha ya pasó 😅 ¿Cuándo te viene bien?`;
         const d2 = new Date(ia.fechaStr + 'T12:00:00');
         if (d2.getDay() === 0) return `Los domingos no atendemos. ¿Qué otro día? (lunes a sábado)`;
@@ -452,15 +471,17 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       }
       return `No entendí la fecha 😅 Di "el viernes", "mañana" o "el 28".`;
     }
-    // FIX: rechazar fechas pasadas
     if (fechaEsPasada(fechaStr)) return `Esa fecha ya pasó 😅 ¿Cuándo te viene bien?`;
     const d = new Date(fechaStr + 'T12:00:00');
     if (d.getDay() === 0) return `Los domingos no atendemos. ¿Qué otro día? (lunes a sábado)`;
-    if (estado.hora) {
-      const ok = await verificarDisponibilidad(fechaStr, estado.hora);
+    // FIX: si ya tenemos hora del mismo mensaje, usarla
+    const horaMismo = parsearHora(t);
+    const horaFinal = horaMismo || estado.hora;
+    if (horaFinal) {
+      const ok = await verificarDisponibilidad(fechaStr, horaFinal);
       if (!ok) { await setEstado(cliente.id, {...estado, fechaStr, paso:'esperando_hora', hora:''}); return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`; }
-      await setEstado(cliente.id, {...estado, fechaStr, paso:'confirmando'});
-      return confirmarCita(estado.emoji, estado.servicio, fechaStr, estado.hora, estado.precio);
+      await setEstado(cliente.id, {...estado, fechaStr, hora: horaFinal, paso:'confirmando'});
+      return textoConfirmacion(estado.emoji, estado.servicio, fechaStr, horaFinal, estado.precio);
     }
     await setEstado(cliente.id, {...estado, fechaStr, paso:'esperando_hora'});
     return `📅 ${fechaLegible(fechaStr)}\n\n¿A qué hora? De 9am a 7pm.`;
@@ -475,38 +496,55 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
     const ok = await verificarDisponibilidad(estado.fechaStr, hora);
     if (!ok) return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`;
     await setEstado(cliente.id, {...estado, hora, paso:'confirmando'});
-    return confirmarCita(estado.emoji, estado.servicio, estado.fechaStr, hora, estado.precio);
+    return textoConfirmacion(estado.emoji, estado.servicio, estado.fechaStr, hora, estado.precio);
   }
 
   // ── CONFIRMANDO ───────────────────────────────────────────────
   if (estado.paso === 'confirmando') {
-    if (t.match(/^(sí|si|yes|confirmo|dale|ok|claro|va|órale|orale|perfecto|listo|ándale|andale|sale|np|simon|simón)$/)) {
+    if (PALABRAS_SI.test(t)) {
       await crearCita(cliente.id, cliente.nombre, estado.servicio, estado.precio, estado.fechaStr, estado.hora);
       await setEstado(cliente.id, { paso:'inicio' });
       await notificarAdmins(`📅 Nueva cita!\n👤 ${cliente.nombre}\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(estado.fechaStr)}\n⏰ ${horaLegible(estado.hora)}\n💰 $${estado.precio}\n📱 ${cliente.telefono||'Sin tel'}`);
       return `Cita confirmada! 🎉\n\nTe esperamos el ${fechaLegible(estado.fechaStr)} a las ${horaLegible(estado.hora)}.\n\nSi necesitas cancelar o cambiar avísanos 🙏`;
     }
-    if (t.match(/^(no|cancel|mejor no|nop|nel|nope)$/)) {
+    if (PALABRAS_NO.test(t)) {
       await setEstado(cliente.id, { paso:'inicio' });
       return `Va, sin problema. Si quieres para otro día aquí estoy 😊`;
     }
 
-    // FIX: detectar cambio de servicio o fecha estando en confirmando
-    const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
+    // FIX: si manda una fecha nueva estando en confirmando, actualizarla
+    const nuevaFechaEnConfirmando = parsearFecha(t);
+    if (nuevaFechaEnConfirmando && !fechaEsPasada(nuevaFechaEnConfirmando)) {
+      const d = new Date(nuevaFechaEnConfirmando + 'T12:00:00');
+      if (d.getDay() === 0) return `Los domingos no atendemos. ¿Qué otro día?`;
+      const nuevaHoraEnConfirmando = parsearHora(t);
+      const horaFinal = nuevaHoraEnConfirmando || estado.hora;
+      if (horaFinal) {
+        const ok = await verificarDisponibilidad(nuevaFechaEnConfirmando, horaFinal);
+        if (ok) {
+          await setEstado(cliente.id, {...estado, fechaStr: nuevaFechaEnConfirmando, hora: horaFinal, paso:'confirmando'});
+          return textoConfirmacion(estado.emoji, estado.servicio, nuevaFechaEnConfirmando, horaFinal, estado.precio);
+        }
+      }
+      await setEstado(cliente.id, {...estado, fechaStr: nuevaFechaEnConfirmando, paso:'esperando_hora', hora:''});
+      return `📅 ${fechaLegible(nuevaFechaEnConfirmando)}\n\n¿A qué hora? De 9am a 7pm.`;
+    }
 
+    // Usar Claude para entender el mensaje
+    const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
+    if (!ia) return `¿Confirmas la cita? Responde sí o no.`;
+
+    if (ia.intencion === 'cancelar') { await setEstado(cliente.id, { paso:'inicio' }); return `Sale, cancelamos 😊 ¿Quieres para otro día?`; }
     if (ia.intencion === 'cambiar_servicio') {
       await setEstado(cliente.id, { paso:'esperando_servicio', fechaStr: estado.fechaStr, hora: estado.hora });
-      return `¿Qué servicio quieres?\n\n${listaSvcsSinPrecio}`;
-    }
-    if (ia.intencion === 'cancelar') {
-      await setEstado(cliente.id, { paso:'inicio' });
-      return `Sale, cancelamos 😊 ¿Quieres para otro día?`;
+      return `¿Qué servicio quieres?\n\n${listaSinPrecio}`;
     }
     if (ia.intencion === 'reagendar' && ia.fechaStr) {
       if (fechaEsPasada(ia.fechaStr)) return `Esa fecha ya pasó 😅 ¿Para cuándo la quieres?`;
-      await setEstado(cliente.id, { ...estado, fechaStr: ia.fechaStr, hora: ia.hora||'', paso: ia.hora ? 'confirmando' : 'esperando_hora' });
+      const paso = ia.hora ? 'confirmando' : 'esperando_hora';
+      await setEstado(cliente.id, { ...estado, fechaStr: ia.fechaStr, hora: ia.hora||'', paso });
       return ia.hora
-        ? confirmarCita(estado.emoji, estado.servicio, ia.fechaStr, ia.hora, estado.precio)
+        ? textoConfirmacion(estado.emoji, estado.servicio, ia.fechaStr, ia.hora, estado.precio)
         : `¿A qué hora el ${fechaLegible(ia.fechaStr)}? De 9am a 7pm.`;
     }
     return `¿Confirmas la cita? Responde sí o no.`;
@@ -515,13 +553,15 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   // ── MENSAJES COMPLEJOS ────────────────────────────────────────
   const esComplejo =
     t.includes('equivoc') || t.includes('cancel') || t.includes('cambiar') ||
-    t.includes('cambio') || t.includes('reagendar') || t.includes('mover') ||
-    t.includes('quita') || t.includes('otro día') || t.includes('otro dia') ||
-    t.includes('próximo') || t.includes('proximo') || t.includes('siguiente') ||
-    t.includes('no era') || t.includes('me confundi');
+    t.includes('cambio')  || t.includes('reagendar') || t.includes('mover') ||
+    t.includes('quita')   || t.includes('otro día') || t.includes('otro dia') ||
+    t.includes('próximo') || t.includes('proximo')  || t.includes('siguiente') ||
+    t.includes('no era')  || t.includes('me confundi') || t.includes('me equivoqué') ||
+    t.includes('mejor')   || t.includes('en vez') || t.includes('en lugar');
 
   if (esComplejo) {
     const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
+    if (!ia) return `¿En qué te puedo ayudar? 😊`;
     console.log('Claude IA:', JSON.stringify(ia));
 
     if (ia.intencion === 'cancelar') {
@@ -530,7 +570,6 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita.\n📱 ${cliente.telefono||'Sin tel'}`);
       return n > 0 ? `Va, cita cancelada 👍 Si quieres agendar otra aquí estoy.` : `No encontré citas activas. ¿Quieres agendar una?`;
     }
-
     if (ia.intencion === 'reagendar') {
       await cancelarCitasPendientes(cliente.id);
       const svcNombre  = ia.servicio || estado.servicio;
@@ -538,16 +577,16 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       const nuevaFecha = ia.fechaStr || parsearFecha(mensaje);
       const nuevaHora  = ia.hora     || parsearHora(mensaje);
 
-      // FIX: validar fecha no pasada
-      if (nuevaFecha && fechaEsPasada(nuevaFecha)) {
-        await setEstado(cliente.id, { paso:'esperando_fecha', servicio: svc?.nombre||'', precio: svc?.precio||0, emoji: svc?.emoji||'✂️' });
-        return `Esa fecha ya pasó 😅 ¿Para cuándo la quieres? (lunes a sábado)`;
+      if (nuevaFecha) {
+        if (fechaEsPasada(nuevaFecha)) {
+          await setEstado(cliente.id, { paso:'esperando_fecha', servicio:svc?.nombre||'', precio:svc?.precio||0, emoji:svc?.emoji||'✂️' });
+          return `Esa fecha ya pasó 😅 ¿Para cuándo la quieres? (lunes a sábado)`;
+        }
+        if (new Date(nuevaFecha+'T12:00:00').getDay() === 0) {
+          await setEstado(cliente.id, { paso:'esperando_fecha', servicio:svc?.nombre||'', precio:svc?.precio||0, emoji:svc?.emoji||'✂️' });
+          return `Los domingos no atendemos. ¿Qué otro día?`;
+        }
       }
-      if (nuevaFecha && new Date(nuevaFecha+'T12:00:00').getDay() === 0) {
-        await setEstado(cliente.id, { paso:'esperando_fecha', servicio: svc?.nombre||'', precio: svc?.precio||0, emoji: svc?.emoji||'✂️' });
-        return `Los domingos no atendemos. ¿Qué otro día?`;
-      }
-
       if (svc && nuevaFecha && nuevaHora) {
         const ok = await verificarDisponibilidad(nuevaFecha, nuevaHora);
         if (!ok) {
@@ -555,45 +594,47 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
           return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`;
         }
         await setEstado(cliente.id, { paso:'confirmando', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:nuevaFecha, hora:nuevaHora });
-        return `Cita anterior cancelada ✓\n\n` + confirmarCita(svc.emoji, svc.nombre, nuevaFecha, nuevaHora, svc.precio);
+        return `Cita anterior cancelada ✓\n\n` + textoConfirmacion(svc.emoji, svc.nombre, nuevaFecha, nuevaHora, svc.precio);
       }
       if (svc && nuevaFecha) {
         await setEstado(cliente.id, { paso:'esperando_hora', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:nuevaFecha });
         return `Cita anterior cancelada ✓\n\n¿A qué hora el ${fechaLegible(nuevaFecha)}? De 9am a 7pm.`;
       }
       await setEstado(cliente.id, { paso:'esperando_servicio' });
-      return `Cita anterior cancelada ✓\n\n¿Qué servicio quieres?\n\n${listaSvcsSinPrecio}`;
+      return `Cita anterior cancelada ✓\n\n¿Qué servicio quieres?\n\n${listaSinPrecio}`;
     }
-
     if (ia.respuesta) return ia.respuesta;
   }
 
-  // FIX: detectar arrepentimiento con contexto del historial
+  // FIX: arrepentimiento con contexto del historial
   const esArrepentimiento =
     t.includes('mera hora') || t.includes('al final') || t.includes('la quiero') ||
-    t.includes('si la') || t.includes('sí la') || t.includes('perdon') || t.includes('perdón');
+    t.includes('si la') || t.includes('sí la') || t.includes('nel es broma') ||
+    t.includes('jk') || t.includes('era broma');
 
   if (esArrepentimiento && historial.length > 0) {
     const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
-    if ((ia.intencion === 'agendar' || ia.intencion === 'reagendar') && ia.servicio) {
+    if (ia && (ia.intencion === 'agendar' || ia.intencion === 'reagendar') && ia.servicio) {
       const svc = svcs.find(s => s.nombre === ia.servicio);
       if (svc && ia.fechaStr && ia.hora && !fechaEsPasada(ia.fechaStr)) {
         const ok = await verificarDisponibilidad(ia.fechaStr, ia.hora);
         if (ok) {
           await setEstado(cliente.id, { paso:'confirmando', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:ia.fechaStr, hora:ia.hora });
-          return confirmarCita(svc.emoji, svc.nombre, ia.fechaStr, ia.hora, svc.precio);
+          return textoConfirmacion(svc.emoji, svc.nombre, ia.fechaStr, ia.hora, svc.precio);
         }
       }
       await setEstado(cliente.id, { paso:'esperando_servicio' });
-      return `¿Qué servicio quieres?\n\n${listaSvcsSinPrecio}`;
+      return `¿Qué servicio quieres?\n\n${listaSinPrecio}`;
     }
   }
 
   // ── QUIERE AGENDAR ────────────────────────────────────────────
   const quiereAgendar =
     t.includes('cita') || t.includes('agendar') || t.includes('reservar') || t.includes('apartar') ||
+    t.includes('me apuntas') || t.includes('apúntame') || t.includes('apuntame') ||
     (t.includes('quiero') && (t.includes('corte') || t.includes('servicio') || t.includes('cita'))) ||
-    (t.includes('me puedes') && t.includes('cita'));
+    (t.includes('me puedes') && t.includes('cita')) || (t.includes('échame') && t.includes('cita')) ||
+    (t.includes('hay') && t.includes('cita'));
 
   if (quiereAgendar) {
     if (infoEx.servicio && infoEx.fechaStr && infoEx.hora) {
@@ -608,7 +649,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       const ok = await verificarDisponibilidad(infoEx.fechaStr, infoEx.hora);
       if (!ok) { await setEstado(cliente.id, { paso:'esperando_hora', ...infoEx, hora:'' }); return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`; }
       await setEstado(cliente.id, { paso:'confirmando', ...infoEx });
-      return confirmarCita(infoEx.emoji, infoEx.servicio, infoEx.fechaStr, infoEx.hora, infoEx.precio);
+      return textoConfirmacion(infoEx.emoji, infoEx.servicio, infoEx.fechaStr, infoEx.hora, infoEx.precio);
     }
     const nuevo = { paso:'esperando_servicio', ...infoEx };
     if (infoEx.servicio) nuevo.paso = infoEx.fechaStr ? 'esperando_hora' : 'esperando_fecha';
@@ -619,22 +660,22 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   }
 
   // ── RESPUESTAS SIMPLES ────────────────────────────────────────
-  if (t.includes('precio') || t.includes('cuánto') || t.includes('cuanto') || t.includes('cuesta') || t.includes('cobran') || t.includes('servicios')) {
+  if (t.includes('precio') || t.includes('cuánto') || t.includes('cuanto') || t.includes('cuesta') || t.includes('cobran') || t.includes('servicios') || t.includes('qué tienen') || t.includes('que tienen')) {
     return `${saludo}Nuestros servicios:\n\n${listaSvcs}`;
   }
-  if (t.includes('horario') || t.includes('abren') || t.includes('atienden') || t.includes('días') || t.includes('dias')) {
+  if (t.includes('horario') || t.includes('abren') || t.includes('atienden') || t.includes('días') || t.includes('dias') || t.includes('cuándo') || t.includes('cuando abren')) {
     return `${saludo}Atendemos de lunes a sábado de 9am a 7pm.`;
   }
-  if (t.match(/^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas tardes|buenas noches|buenos días|buenos dias|qué onda|que onda|quiubo|quiúbo)/) || t.length <= 5) {
-    await setEstado(cliente.id, { paso:'inicio' });
-    return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
-  }
-  if (t.match(/^(gracias|ok|okey|de nada|hasta luego|bye|adios|adiós|listo|perfecto|excelente|genial|👍|np|sale|va)$/)) {
+  if (PALABRAS_DESPEDIDA.test(t)) {
     return `Con gusto! Que te vaya bien 😊`;
   }
 
   // ── MENSAJE NO RECONOCIDO — Claude ────────────────────────────
   const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
+  if (!ia) {
+    await notificarAdmins(`❓ Sin respuesta de ${cliente.nombre}:\n"${mensaje}"\n📱 ${cliente.telefono||'Sin tel'}`);
+    return `Ahorita no tengo respuesta para eso 😅 Zaira te puede ayudar, en breve se pone en contacto 🙏`;
+  }
   if (ia.intencion === 'disponibilidad') {
     if (ia.fechaStr && !fechaEsPasada(ia.fechaStr)) {
       const d = new Date(ia.fechaStr + 'T12:00:00');
@@ -643,7 +684,11 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
     }
     return `Sí tenemos horarios disponibles 😊 ¿Para qué día quieres?`;
   }
-  if (ia.intencion === 'saludo' && saludo) return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?`;
+  if (ia.intencion === 'saludo') {
+    await setEstado(cliente.id, { paso:'inicio' });
+    return saludar ? `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario` : `¿En qué te puedo ayudar? 😊`;
+  }
+  if (ia.intencion === 'despedida') return `Con gusto! Que te vaya bien 😊`;
   if (ia.respuesta) {
     await notificarAdmins(`❓ Mensaje de ${cliente.nombre}:\n"${mensaje}"\n📱 ${cliente.telefono||'Sin tel'}`);
     return ia.respuesta;
@@ -668,9 +713,7 @@ exports.handler = async (event) => {
     console.log(`MSG de ${from} (${tel}): ${mensaje}`);
 
     if (mensaje.trim() === `/admin${ADMIN_PWD}`) {
-      await setAdmin(tel, true);
-      await setAdminBotOn(tel, false);
-      await setAdminModoPrueba(tel, false);
+      await setAdmin(tel, true); await setAdminBotOn(tel, false); await setAdminModoPrueba(tel, false);
       return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>✅ Sesión admin iniciada!\n\nEscribe /ayuda para ver los comandos.</Body></Message></Response>` };
     }
 
@@ -682,8 +725,8 @@ exports.handler = async (event) => {
       }
       const modoPrueba = await getAdminModoPrueba(tel);
       if (modoPrueba) {
-        const estado = await getEstado(`prueba_${tel}`);
-        const svcsJson = await fsGet('servicios');
+        const estado    = await getEstado(`prueba_${tel}`);
+        const svcsJson  = await fsGet('servicios');
         const servicios = (svcsJson.documents||[]).map(parseDoc).filter(Boolean).filter(s => s.nombre);
         const clientePrueba = { id:`prueba_${tel}`, nombre:'Admin (prueba)', telefono: tel };
         const respuesta = await procesarMensaje(mensaje, estado, clientePrueba, servicios, []);
@@ -704,8 +747,7 @@ exports.handler = async (event) => {
     let cliente = null;
     const clientesJson = await fsGet('clientes');
     for (const doc of (clientesJson.documents||[])) {
-      const c = parseDoc(doc);
-      if (!c) continue;
+      const c = parseDoc(doc); if (!c) continue;
       const telDoc = normalizarTel(c.telefono||'');
       if (telDoc.length >= 8 && telDoc === tel) { cliente = c; break; }
     }
