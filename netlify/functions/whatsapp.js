@@ -1,11 +1,17 @@
 const Anthropic = require('@anthropic-ai/sdk');
 
-// ── Config ────────────────────────────────────────────────────────
 const ADMIN_PWD  = process.env.ADMIN_PASSWORD || '1307';
 const NUMERO_BOT = process.env.TWILIO_SANDBOX_NUMBER || 'whatsapp:+14155238886';
 
 function normalizarTel(tel) {
   return tel.replace(/\D/g, '').replace(/^521?/, '').slice(-10);
+}
+
+// ── Timezone Mexico ───────────────────────────────────────────────
+function hoyMX() {
+  const mx = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+  mx.setHours(0, 0, 0, 0);
+  return mx;
 }
 
 // ── Firestore REST ────────────────────────────────────────────────
@@ -17,7 +23,6 @@ async function fsGet(path) {
   const res = await fetch(`${BASEURL()}/${path}?key=${APIKEY()}`);
   return res.json();
 }
-
 async function fsSet(path, fields) {
   const res = await fetch(`${BASEURL()}/${path}?key=${APIKEY()}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -25,7 +30,6 @@ async function fsSet(path, fields) {
   });
   return res.json();
 }
-
 async function fsPost(path, fields) {
   const res = await fetch(`${BASEURL()}/${path}?key=${APIKEY()}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -78,40 +82,18 @@ async function notificarAdmins(msg) {
   for (const t of tels) await enviarWA(t, msg);
 }
 
-// ── Sesión admin ──────────────────────────────────────────────────
+// ── Admin ─────────────────────────────────────────────────────────
 async function esAdmin(tel) {
-  try {
-    const res = await fsGet(`admin_sesion/${tel}`);
-    const doc = parseDoc(res);
-    return doc?.activo === true;
-  } catch { return false; }
+  try { const res = await fsGet(`admin_sesion/${tel}`); return parseDoc(res)?.activo === true; } catch { return false; }
 }
-
-async function setAdmin(tel, activo) {
-  await fsSet(`admin_sesion/${tel}`, toFields({ activo }));
-}
-
+async function setAdmin(tel, activo) { await fsSet(`admin_sesion/${tel}`, toFields({ activo })); }
 async function getAdminBotOn(tel) {
-  try {
-    const res = await fsGet(`admin_bot/${tel}`);
-    const doc = parseDoc(res);
-    return doc?.activo === true;
-  } catch { return false; }
+  try { const res = await fsGet(`admin_bot/${tel}`); return parseDoc(res)?.activo === true; } catch { return false; }
 }
-
-async function setAdminBotOn(tel, activo) {
-  await fsSet(`admin_bot/${tel}`, toFields({ activo }));
-}
-
-// FIX: modo prueba — bot responde en WA pero NO guarda en app
+async function setAdminBotOn(tel, activo) { await fsSet(`admin_bot/${tel}`, toFields({ activo })); }
 async function getAdminModoPrueba(tel) {
-  try {
-    const res = await fsGet(`admin_bot/${tel}`);
-    const doc = parseDoc(res);
-    return doc?.modoPrueba === true;
-  } catch { return false; }
+  try { const res = await fsGet(`admin_bot/${tel}`); return parseDoc(res)?.modoPrueba === true; } catch { return false; }
 }
-
 async function setAdminModoPrueba(tel, activo) {
   await fsSet(`admin_bot/${tel}`, toFields({ activo: true, modoPrueba: activo }));
 }
@@ -125,7 +107,6 @@ async function getEstado(clienteId) {
   } catch {}
   return { paso: 'inicio', ultimoMensaje: '' };
 }
-
 async function setEstado(clienteId, estado) {
   await fsSet(`conversacion_estado/${clienteId}`, toFields({
     paso:          estado.paso      || 'inicio',
@@ -149,7 +130,7 @@ async function guardarMsg(clienteId, de, texto) {
   });
 }
 
-// ── Historial para memoria ────────────────────────────────────────
+// ── Historial ─────────────────────────────────────────────────────
 async function getHistorial(clienteId) {
   try {
     const res  = await fsGet(`clientes/${clienteId}/mensajes`);
@@ -165,10 +146,13 @@ async function getHistorial(clienteId) {
 // ── Fecha/hora ────────────────────────────────────────────────────
 function parsearFecha(texto) {
   const t   = texto.toLowerCase().trim();
-  const hoy = new Date();
+  const hoy = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
   const dias = { lunes:1, martes:2, 'miércoles':3, miercoles:3, jueves:4, viernes:5, 'sábado':6, sabado:6 };
 
   if (t.includes('hoy')) return formatFecha(hoy);
+  if (t.includes('pasado mañana') || t.includes('pasado manana')) {
+    const m = new Date(hoy); m.setDate(m.getDate()+2); return formatFecha(m);
+  }
   if (t.includes('mañana') || t.includes('manana')) {
     const m = new Date(hoy); m.setDate(m.getDate()+1); return formatFecha(m);
   }
@@ -187,6 +171,7 @@ function parsearFecha(texto) {
       const match = t.match(/(\d{1,2})/);
       if (match) {
         const d = new Date(hoy.getFullYear(), num, parseInt(match[1]));
+        // FIX: si la fecha ya pasó, ir al siguiente año
         if (d < hoy) d.setFullYear(d.getFullYear()+1);
         return formatFecha(d);
       }
@@ -211,6 +196,12 @@ function fechaLegible(fs) {
   const dias = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
   const mes  = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   return `${dias[d.getDay()]} ${d.getDate()} de ${mes[d.getMonth()]}`;
+}
+
+// FIX: validar que fecha no sea pasada usando timezone Mexico
+function fechaEsPasada(fechaStr) {
+  const d    = new Date(fechaStr + 'T12:00:00');
+  return d < hoyMX();
 }
 
 function parsearHora(texto) {
@@ -263,25 +254,18 @@ async function verificarDisponibilidad(fechaStr, hora) {
 
 async function crearCita(clienteId, nombre, servicio, precio, fechaStr, hora) {
   return fsPost('citas', toFields({
-    clientId:      clienteId || '',
-    clienteNombre: nombre    || 'Clienta',
-    servicio:      servicio  || '',
-    precio:        Number(precio) || 0,
-    duracion:      30,
-    hora:          hora      || '',
-    fechaStr:      fechaStr  || '',
-    estado:        'confirmed',
-    creadoEn:      new Date().toISOString(),
+    clientId: clienteId || '', clienteNombre: nombre || 'Clienta',
+    servicio: servicio || '', precio: Number(precio) || 0,
+    duracion: 30, hora: hora || '', fechaStr: fechaStr || '',
+    estado: 'confirmed', creadoEn: new Date().toISOString(),
   }));
 }
 
 async function cancelarCitasPendientes(clienteId) {
-  const res   = await fsGet('citas');
-  const citas = (res.documents || []).map(parseDoc).filter(Boolean);
-  const pend  = citas.filter(c => c.clientId === clienteId && c.estado === 'confirmed');
-  for (const c of pend) {
-    await fsSet(`citas/${c.id}`, toFields({ ...c, estado: 'cancelled' }));
-  }
+  const res  = await fsGet('citas');
+  const pend = (res.documents || []).map(parseDoc).filter(Boolean)
+    .filter(c => c.clientId === clienteId && c.estado === 'confirmed');
+  for (const c of pend) await fsSet(`citas/${c.id}`, toFields({ ...c, estado: 'cancelled' }));
   return pend.length;
 }
 
@@ -293,48 +277,52 @@ async function respuestaInteligente(mensaje, historial, cliente, estado, servici
     ? `Paso actual: ${estado.paso}. Servicio: ${estado.servicio||'ninguno'}. Fecha: ${estado.fechaStr||'ninguna'}. Hora: ${estado.hora||'ninguna'}.`
     : '';
 
+  const hoyStr = formatFecha(new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' })));
+
   const system = `Eres Zai, asistente de WhatsApp de Barbería Zaira en México.
 
 SERVICIOS:
 ${svcsInfo}
 
 HORARIO: Lunes a sábado 9am a 7pm.
+HOY ES: ${hoyStr}
 CLIENTE: ${cliente.nombre}
 ${estadoInfo}
 
 REGLAS:
-- Habla en español mexicano natural y relajado, sin exagerar
-- Frases como "te va a quedar chido", "sale", "va", "órale" están bien pero úsalas con moderación
+- Habla en español mexicano natural, sin exagerar
 - NUNCA menciones links ni páginas web
 - NUNCA inventes precios que no estén en la lista
-- Si preguntan disponibilidad de fechas/horarios, responde que sí hay horarios disponibles esa fecha
-- Si quieren cancelar o reagendar, detecta la intención claramente
-- Responde SOLO con JSON:
+- Las fechas NUNCA pueden ser anteriores a hoy (${hoyStr})
+- Si quieren cancelar o reagendar, detecta la intención
+- Responde SOLO con JSON sin texto adicional:
 {
-  "intencion": "cancelar" | "reagendar" | "agendar" | "disponibilidad" | "info" | "saludo" | "otro",
+  "intencion": "cancelar" | "reagendar" | "agendar" | "cambiar_servicio" | "disponibilidad" | "info" | "saludo" | "otro",
   "servicio": "nombre exacto del servicio o null",
-  "fechaStr": "YYYY-MM-DD o null",
+  "fechaStr": "YYYY-MM-DD o null (nunca anterior a hoy)",
   "hora": "HH:MM o null",
   "respuesta": "mensaje corto para el cliente, máximo 2 oraciones"
 }`;
 
   try {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 300,
-      system,
+      model: 'claude-sonnet-4-20250514', max_tokens: 300, system,
       messages: [...historial, { role: 'user', content: mensaje }],
     });
     const text  = response.content[0]?.text?.trim() || '{}';
     const clean = text.replace(/```json|```/g, '').trim();
-    return JSON.parse(clean);
+    const parsed = JSON.parse(clean);
+    // FIX: validar que la fecha que devuelve Claude no sea pasada
+    if (parsed.fechaStr && fechaEsPasada(parsed.fechaStr)) {
+      parsed.fechaStr = null;
+    }
+    return parsed;
   } catch(e) {
     console.error('Claude error:', e);
     return { intencion: 'otro', respuesta: '¿Me puedes repetir? No te entendí bien.' };
   }
 }
 
-// ── Verificar si es pregunta de disponibilidad (no agendar) ───────
 function esPreguntaDisponibilidad(t) {
   return (
     (t.includes('tendr') || t.includes('hay') || t.includes('tienen') || t.includes('habrá') || t.includes('habra')) &&
@@ -345,53 +333,32 @@ function esPreguntaDisponibilidad(t) {
 // ── Comandos admin ────────────────────────────────────────────────
 async function procesarComandoAdmin(cmd, tel) {
   const c = cmd.trim().toLowerCase();
-
-  if (c === '/on') {
-    await setAdminBotOn(tel, true);
-    await setAdminModoPrueba(tel, false);
-    return '✅ Bot ON — te respondo como IA y se guarda en la app.';
-  }
-  if (c === '/off') {
-    await setAdminBotOn(tel, false);
-    await setAdminModoPrueba(tel, false);
-    return '⛔ Bot OFF — te ignoro completamente.';
-  }
-  if (c === '/prueba') {
-    await setAdminModoPrueba(tel, true);
-    return '🧪 Modo prueba ON — te respondo en WhatsApp pero NO se guarda en la app.';
-  }
-  if (c === '/salir') {
-    await setAdmin(tel, false);
-    await setAdminBotOn(tel, false);
-    await setAdminModoPrueba(tel, false);
-    return '👋 Sesión admin cerrada.';
-  }
+  if (c === '/on')    { await setAdminBotOn(tel, true);  await setAdminModoPrueba(tel, false); return '✅ Bot ON — te respondo como IA y se guarda en la app.'; }
+  if (c === '/off')   { await setAdminBotOn(tel, false); await setAdminModoPrueba(tel, false); return '⛔ Bot OFF — te ignoro completamente.'; }
+  if (c === '/prueba'){ await setAdminModoPrueba(tel, true); return '🧪 Modo prueba ON — te respondo en WhatsApp pero NO se guarda en la app.'; }
+  if (c === '/salir') { await setAdmin(tel, false); await setAdminBotOn(tel, false); await setAdminModoPrueba(tel, false); return '👋 Sesión admin cerrada.'; }
   if (c === '/citas') {
-    const hoyStr = formatFecha(new Date());
+    const hoyStr = formatFecha(new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' })));
     const res    = await fsGet('citas');
-    const lista  = (res.documents || []).map(parseDoc).filter(Boolean)
+    const lista  = (res.documents||[]).map(parseDoc).filter(Boolean)
       .filter(c => c.fechaStr === hoyStr && c.estado !== 'cancelled')
       .sort((a,b) => (a.hora||'').localeCompare(b.hora||''));
     if (!lista.length) return '📅 No hay citas para hoy.';
     return `📅 Citas hoy (${lista.length}):\n\n` + lista.map(c => `⏰ ${horaLegible(c.hora)} — ${c.clienteNombre} — ${c.servicio}`).join('\n');
   }
   if (c === '/mañana' || c === '/manana') {
-    const d   = new Date(); d.setDate(d.getDate()+1);
-    const str = formatFecha(d);
+    const mx = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+    mx.setDate(mx.getDate()+1);
+    const str = formatFecha(mx);
     const res = await fsGet('citas');
-    const lista = (res.documents || []).map(parseDoc).filter(Boolean)
+    const lista = (res.documents||[]).map(parseDoc).filter(Boolean)
       .filter(c => c.fechaStr === str && c.estado !== 'cancelled')
       .sort((a,b) => (a.hora||'').localeCompare(b.hora||''));
     if (!lista.length) return '📅 No hay citas para mañana.';
     return `📅 Citas mañana (${lista.length}):\n\n` + lista.map(c => `⏰ ${horaLegible(c.hora)} — ${c.clienteNombre} — ${c.servicio}`).join('\n');
   }
-  if (c === '/clientes') {
-    const res = await fsGet('clientes');
-    return `👥 Clientas registradas: ${(res.documents||[]).length}`;
-  }
-  if (c === '/ayuda') {
-    return `Comandos:\n\n/on — Bot te responde y guarda en app\n/off — Bot te ignora\n/prueba — Bot responde en WA sin guardar en app\n/citas — Citas de hoy\n/mañana — Citas de mañana\n/clientes — Total clientas\n/salir — Cerrar sesión\n/ayuda — Esta lista`;
-  }
+  if (c === '/clientes') { const res = await fsGet('clientes'); return `👥 Clientas registradas: ${(res.documents||[]).length}`; }
+  if (c === '/ayuda') return `Comandos:\n\n/on — Bot te responde y guarda en app\n/off — Bot te ignora\n/prueba — Bot responde en WA sin guardar en app\n/citas — Citas de hoy\n/mañana — Citas de mañana\n/clientes — Total clientas\n/salir — Cerrar sesión\n/ayuda — Esta lista`;
   return `Comando no reconocido. Escribe /ayuda.`;
 }
 
@@ -400,7 +367,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   const t     = mensaje.toLowerCase().trim();
   const ahora = new Date();
 
-  const minutos = estado.ultimoMensaje
+  const minutos   = estado.ultimoMensaje
     ? (ahora.getTime() - new Date(estado.ultimoMensaje).getTime()) / 60000
     : 999;
   const saludar     = !estado.ultimoMensaje || minutos > 240;
@@ -409,21 +376,28 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   const saludo      = saludar ? `Hola${nombre}! 😊\n\n` : '';
 
   const svcs      = servicios.filter(s => s.nombre);
-  const listaSvcs = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`).join('\n');
+  // FIX: lista sin precio en los flujos, solo nombre y emoji
+  const listaSvcs      = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`).join('\n');
+  const listaSvcsSinPrecio = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}`).join('\n');
   const infoEx    = extraerInfoCita(mensaje, svcs);
 
-  // FIX: detectar pregunta de disponibilidad ANTES de intentar agendar
+  // Helpers de confirmación
+  const confirmarCita = (emoji, servicio, fechaStr, hora, precio, conPrecio = true) =>
+    `Confirma tu cita:\n\n${emoji||'✂️'} ${servicio}\n📅 ${fechaLegible(fechaStr)}\n⏰ ${horaLegible(hora)}${conPrecio ? `\n💰 $${precio}` : ''}\n\n¿Va? (sí/no)`;
+
+  // ── Disponibilidad ────────────────────────────────────────────
   if (esPreguntaDisponibilidad(t)) {
     const fecha = parsearFecha(t);
     if (fecha) {
       const d = new Date(fecha + 'T12:00:00');
       if (d.getDay() === 0) return `Los domingos no atendemos. De lunes a sábado de 9am a 7pm 😊`;
+      if (fechaEsPasada(fecha)) return `Esa fecha ya pasó 😅 ¿Para cuándo quieres?`;
       return `Sí hay horarios disponibles el ${fechaLegible(fecha)} 😊 ¿Te agendo una cita?`;
     }
     return `Sí tenemos horarios disponibles de lunes a sábado de 9am a 7pm 😊 ¿Para qué día quieres?`;
   }
 
-  // ── FLUJO ESPERANDO SERVICIO ──────────────────────────────────
+  // ── ESPERANDO SERVICIO ────────────────────────────────────────
   if (estado.paso === 'esperando_servicio') {
     const numMatch = t.match(/^(\d+)$/);
     let svc = null;
@@ -431,9 +405,8 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       const idx = parseInt(numMatch[1]) - 1;
       if (idx >= 0 && idx < svcs.length) svc = svcs[idx];
     } else {
-      // FIX: buscar servicio más flexible — incluye "niño", "morrito", "chamaco"
       svc = svcs.find(s => s.nombre.toLowerCase().split(' ').some(p => p.length > 3 && t.includes(p)));
-      if (!svc && (t.includes('niño') || t.includes('nino') || t.includes('morrito') || t.includes('chamaco') || t.includes('chavo'))) {
+      if (!svc && (t.includes('niño') || t.includes('nino') || t.includes('morrito') || t.includes('chamaco') || t.includes('chavo') || t.includes('morro'))) {
         svc = svcs.find(s => s.nombre.toLowerCase().includes('niño') || s.nombre.toLowerCase().includes('nino'));
       }
     }
@@ -443,12 +416,11 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
         await notificarAdmins(`💬 Servicio especial de ${cliente.nombre}:\n"${mensaje}"\n📱 ${cliente.telefono||'Sin tel'}`);
         return `Para eso Zaira te atiende directo. En breve se pone en contacto 🙏`;
       }
-      // FIX: si estamos esperando servicio y mandan una fecha, guardarla
       if (infoEx.fechaStr) {
         await setEstado(cliente.id, { ...estado, fechaStr: infoEx.fechaStr });
-        return `No entendí el servicio 😅 ¿Cuál te interesa?\n\n${listaSvcs}`;
+        return `No entendí el servicio 😅 ¿Cuál te interesa?\n\n${listaSvcsSinPrecio}`;
       }
-      return `No entendí el servicio 😅 Elige un número o escribe el nombre:\n\n${listaSvcs}`;
+      return `No entendí el servicio 😅 Elige un número o escribe el nombre:\n\n${listaSvcsSinPrecio}`;
     }
     const nuevo = { paso:'esperando_fecha', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️' };
     if (estado.fechaStr) nuevo.fechaStr = estado.fechaStr;
@@ -458,7 +430,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       if (!ok) { nuevo.paso = 'esperando_hora'; nuevo.hora = ''; await setEstado(cliente.id, nuevo); return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`; }
       nuevo.paso = 'confirmando';
       await setEstado(cliente.id, nuevo);
-      return `Sale, confirma tu cita:\n\n${nuevo.emoji} ${nuevo.servicio}\n📅 ${fechaLegible(nuevo.fechaStr)}\n⏰ ${horaLegible(nuevo.hora)}\n💰 $${nuevo.precio}\n\n¿Va? (sí/no)`;
+      return confirmarCita(nuevo.emoji, nuevo.servicio, nuevo.fechaStr, nuevo.hora, nuevo.precio);
     }
     await setEstado(cliente.id, nuevo);
     return nuevo.fechaStr
@@ -466,14 +438,13 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       : `${svc.emoji||'✂️'} ${svc.nombre} anotado!\n\n¿Para qué día? (lunes a sábado)`;
   }
 
-  // ── FLUJO ESPERANDO FECHA ─────────────────────────────────────
+  // ── ESPERANDO FECHA ───────────────────────────────────────────
   if (estado.paso === 'esperando_fecha') {
-    // FIX: si dice "para mi niño" etc mientras espera fecha, no confundirlo con fecha
     const fechaStr = parsearFecha(t);
     if (!fechaStr) {
-      // Intentar con Claude por si es un mensaje complejo
       const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
       if (ia.fechaStr) {
+        if (fechaEsPasada(ia.fechaStr)) return `Esa fecha ya pasó 😅 ¿Cuándo te viene bien?`;
         const d2 = new Date(ia.fechaStr + 'T12:00:00');
         if (d2.getDay() === 0) return `Los domingos no atendemos. ¿Qué otro día? (lunes a sábado)`;
         await setEstado(cliente.id, {...estado, fechaStr: ia.fechaStr, paso:'esperando_hora'});
@@ -481,20 +452,21 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       }
       return `No entendí la fecha 😅 Di "el viernes", "mañana" o "el 28".`;
     }
+    // FIX: rechazar fechas pasadas
+    if (fechaEsPasada(fechaStr)) return `Esa fecha ya pasó 😅 ¿Cuándo te viene bien?`;
     const d = new Date(fechaStr + 'T12:00:00');
     if (d.getDay() === 0) return `Los domingos no atendemos. ¿Qué otro día? (lunes a sábado)`;
-    if (d < new Date(new Date().setHours(0,0,0,0))) return `Esa fecha ya pasó 😅 ¿Cuándo te viene bien?`;
     if (estado.hora) {
       const ok = await verificarDisponibilidad(fechaStr, estado.hora);
       if (!ok) { await setEstado(cliente.id, {...estado, fechaStr, paso:'esperando_hora', hora:''}); return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`; }
       await setEstado(cliente.id, {...estado, fechaStr, paso:'confirmando'});
-      return `Confirma tu cita:\n\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(fechaStr)}\n⏰ ${horaLegible(estado.hora)}\n💰 $${estado.precio}\n\n¿Va? (sí/no)`;
+      return confirmarCita(estado.emoji, estado.servicio, fechaStr, estado.hora, estado.precio);
     }
     await setEstado(cliente.id, {...estado, fechaStr, paso:'esperando_hora'});
     return `📅 ${fechaLegible(fechaStr)}\n\n¿A qué hora? De 9am a 7pm.`;
   }
 
-  // ── FLUJO ESPERANDO HORA ──────────────────────────────────────
+  // ── ESPERANDO HORA ────────────────────────────────────────────
   if (estado.paso === 'esperando_hora') {
     const hora = parsearHora(t);
     if (!hora) return `No entendí la hora 😅 Di "11am", "3pm" o "a las 2".`;
@@ -503,12 +475,12 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
     const ok = await verificarDisponibilidad(estado.fechaStr, hora);
     if (!ok) return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`;
     await setEstado(cliente.id, {...estado, hora, paso:'confirmando'});
-    return `Confirma:\n\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(estado.fechaStr)}\n⏰ ${horaLegible(hora)}\n💰 $${estado.precio}\n\n¿Va? (sí/no)`;
+    return confirmarCita(estado.emoji, estado.servicio, estado.fechaStr, hora, estado.precio);
   }
 
-  // ── FLUJO CONFIRMANDO ─────────────────────────────────────────
+  // ── CONFIRMANDO ───────────────────────────────────────────────
   if (estado.paso === 'confirmando') {
-    if (t.match(/^(sí|si|yes|confirmo|dale|ok|claro|va|órale|orale|perfecto|listo|ándale|andale|sale|np|simon|sí|simón)$/)) {
+    if (t.match(/^(sí|si|yes|confirmo|dale|ok|claro|va|órale|orale|perfecto|listo|ándale|andale|sale|np|simon|simón)$/)) {
       await crearCita(cliente.id, cliente.nombre, estado.servicio, estado.precio, estado.fechaStr, estado.hora);
       await setEstado(cliente.id, { paso:'inicio' });
       await notificarAdmins(`📅 Nueva cita!\n👤 ${cliente.nombre}\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(estado.fechaStr)}\n⏰ ${horaLegible(estado.hora)}\n💰 $${estado.precio}\n📱 ${cliente.telefono||'Sin tel'}`);
@@ -518,16 +490,23 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       await setEstado(cliente.id, { paso:'inicio' });
       return `Va, sin problema. Si quieres para otro día aquí estoy 😊`;
     }
-    // Mensaje diferente estando confirmando — usar Claude
+
+    // FIX: detectar cambio de servicio o fecha estando en confirmando
     const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
+
+    if (ia.intencion === 'cambiar_servicio') {
+      await setEstado(cliente.id, { paso:'esperando_servicio', fechaStr: estado.fechaStr, hora: estado.hora });
+      return `¿Qué servicio quieres?\n\n${listaSvcsSinPrecio}`;
+    }
     if (ia.intencion === 'cancelar') {
       await setEstado(cliente.id, { paso:'inicio' });
       return `Sale, cancelamos 😊 ¿Quieres para otro día?`;
     }
     if (ia.intencion === 'reagendar' && ia.fechaStr) {
+      if (fechaEsPasada(ia.fechaStr)) return `Esa fecha ya pasó 😅 ¿Para cuándo la quieres?`;
       await setEstado(cliente.id, { ...estado, fechaStr: ia.fechaStr, hora: ia.hora||'', paso: ia.hora ? 'confirmando' : 'esperando_hora' });
       return ia.hora
-        ? `Confirma:\n\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(ia.fechaStr)}\n⏰ ${horaLegible(ia.hora)}\n💰 $${estado.precio}\n\n¿Va? (sí/no)`
+        ? confirmarCita(estado.emoji, estado.servicio, ia.fechaStr, ia.hora, estado.precio)
         : `¿A qué hora el ${fechaLegible(ia.fechaStr)}? De 9am a 7pm.`;
     }
     return `¿Confirmas la cita? Responde sí o no.`;
@@ -549,47 +528,65 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       const n = await cancelarCitasPendientes(cliente.id);
       await setEstado(cliente.id, { paso:'inicio' });
       await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita.\n📱 ${cliente.telefono||'Sin tel'}`);
-      return n > 0
-        ? `Va, cita cancelada 👍 Si quieres agendar otra aquí estoy.`
-        : `No encontré citas activas. ¿Quieres agendar una?`;
+      return n > 0 ? `Va, cita cancelada 👍 Si quieres agendar otra aquí estoy.` : `No encontré citas activas. ¿Quieres agendar una?`;
     }
 
     if (ia.intencion === 'reagendar') {
       await cancelarCitasPendientes(cliente.id);
-      const svcNombre = ia.servicio || estado.servicio;
-      const svc = svcs.find(s => s.nombre === svcNombre) ||
-                  svcs.find(s => s.nombre.toLowerCase().includes((svcNombre||'').toLowerCase().split(' ')[0]));
+      const svcNombre  = ia.servicio || estado.servicio;
+      const svc        = svcs.find(s => s.nombre === svcNombre) || svcs.find(s => s.nombre.toLowerCase().includes((svcNombre||'').toLowerCase().split(' ')[0]));
       const nuevaFecha = ia.fechaStr || parsearFecha(mensaje);
       const nuevaHora  = ia.hora     || parsearHora(mensaje);
 
+      // FIX: validar fecha no pasada
+      if (nuevaFecha && fechaEsPasada(nuevaFecha)) {
+        await setEstado(cliente.id, { paso:'esperando_fecha', servicio: svc?.nombre||'', precio: svc?.precio||0, emoji: svc?.emoji||'✂️' });
+        return `Esa fecha ya pasó 😅 ¿Para cuándo la quieres? (lunes a sábado)`;
+      }
+      if (nuevaFecha && new Date(nuevaFecha+'T12:00:00').getDay() === 0) {
+        await setEstado(cliente.id, { paso:'esperando_fecha', servicio: svc?.nombre||'', precio: svc?.precio||0, emoji: svc?.emoji||'✂️' });
+        return `Los domingos no atendemos. ¿Qué otro día?`;
+      }
+
       if (svc && nuevaFecha && nuevaHora) {
-        const d = new Date(nuevaFecha + 'T12:00:00');
-        if (d.getDay() === 0) {
-          await setEstado(cliente.id, { paso:'esperando_fecha', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️' });
-          return `Los domingos no atendemos. ¿Qué otro día?`;
-        }
-        const [h] = nuevaHora.split(':').map(Number);
-        if (h < 9 || h > 19) {
-          await setEstado(cliente.id, { paso:'esperando_hora', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:nuevaFecha });
-          return `Atendemos de 9am a 7pm. ¿Qué hora te viene?`;
-        }
         const ok = await verificarDisponibilidad(nuevaFecha, nuevaHora);
         if (!ok) {
           await setEstado(cliente.id, { paso:'esperando_hora', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:nuevaFecha });
           return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`;
         }
         await setEstado(cliente.id, { paso:'confirmando', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:nuevaFecha, hora:nuevaHora });
-        return `Cita anterior cancelada ✓\n\nConfirma la nueva:\n\n${svc.emoji||'✂️'} ${svc.nombre}\n📅 ${fechaLegible(nuevaFecha)}\n⏰ ${horaLegible(nuevaHora)}\n💰 $${svc.precio}\n\n¿Va? (sí/no)`;
+        return `Cita anterior cancelada ✓\n\n` + confirmarCita(svc.emoji, svc.nombre, nuevaFecha, nuevaHora, svc.precio);
       }
       if (svc && nuevaFecha) {
         await setEstado(cliente.id, { paso:'esperando_hora', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:nuevaFecha });
         return `Cita anterior cancelada ✓\n\n¿A qué hora el ${fechaLegible(nuevaFecha)}? De 9am a 7pm.`;
       }
       await setEstado(cliente.id, { paso:'esperando_servicio' });
-      return `Cita anterior cancelada ✓\n\n¿Qué servicio quieres?\n\n${listaSvcs}`;
+      return `Cita anterior cancelada ✓\n\n¿Qué servicio quieres?\n\n${listaSvcsSinPrecio}`;
     }
 
     if (ia.respuesta) return ia.respuesta;
+  }
+
+  // FIX: detectar arrepentimiento con contexto del historial
+  const esArrepentimiento =
+    t.includes('mera hora') || t.includes('al final') || t.includes('la quiero') ||
+    t.includes('si la') || t.includes('sí la') || t.includes('perdon') || t.includes('perdón');
+
+  if (esArrepentimiento && historial.length > 0) {
+    const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
+    if ((ia.intencion === 'agendar' || ia.intencion === 'reagendar') && ia.servicio) {
+      const svc = svcs.find(s => s.nombre === ia.servicio);
+      if (svc && ia.fechaStr && ia.hora && !fechaEsPasada(ia.fechaStr)) {
+        const ok = await verificarDisponibilidad(ia.fechaStr, ia.hora);
+        if (ok) {
+          await setEstado(cliente.id, { paso:'confirmando', servicio:svc.nombre, precio:svc.precio, emoji:svc.emoji||'✂️', fechaStr:ia.fechaStr, hora:ia.hora });
+          return confirmarCita(svc.emoji, svc.nombre, ia.fechaStr, ia.hora, svc.precio);
+        }
+      }
+      await setEstado(cliente.id, { paso:'esperando_servicio' });
+      return `¿Qué servicio quieres?\n\n${listaSvcsSinPrecio}`;
+    }
   }
 
   // ── QUIERE AGENDAR ────────────────────────────────────────────
@@ -600,6 +597,10 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
 
   if (quiereAgendar) {
     if (infoEx.servicio && infoEx.fechaStr && infoEx.hora) {
+      if (fechaEsPasada(infoEx.fechaStr)) {
+        await setEstado(cliente.id, { paso:'esperando_fecha', ...infoEx, fechaStr:'' });
+        return `Esa fecha ya pasó 😅 ¿Para cuándo la quieres?`;
+      }
       const d = new Date(infoEx.fechaStr + 'T12:00:00');
       if (d.getDay() === 0) { await setEstado(cliente.id, { paso:'esperando_fecha', ...infoEx }); return `Los domingos no atendemos. ¿Qué otro día?`; }
       const [h] = infoEx.hora.split(':').map(Number);
@@ -607,7 +608,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       const ok = await verificarDisponibilidad(infoEx.fechaStr, infoEx.hora);
       if (!ok) { await setEstado(cliente.id, { paso:'esperando_hora', ...infoEx, hora:'' }); return `Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`; }
       await setEstado(cliente.id, { paso:'confirmando', ...infoEx });
-      return `Sale, confirma:\n\n${infoEx.emoji||'✂️'} ${infoEx.servicio}\n📅 ${fechaLegible(infoEx.fechaStr)}\n⏰ ${horaLegible(infoEx.hora)}\n💰 $${infoEx.precio}\n\n¿Va? (sí/no)`;
+      return confirmarCita(infoEx.emoji, infoEx.servicio, infoEx.fechaStr, infoEx.hora, infoEx.precio);
     }
     const nuevo = { paso:'esperando_servicio', ...infoEx };
     if (infoEx.servicio) nuevo.paso = infoEx.fechaStr ? 'esperando_hora' : 'esperando_fecha';
@@ -618,19 +619,16 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   }
 
   // ── RESPUESTAS SIMPLES ────────────────────────────────────────
-  if (t.includes('precio') || t.includes('cuánto') || t.includes('cuanto') || t.includes('cuesta') || t.includes('cobran') || t.includes('sale') || t.includes('servicios')) {
-    return `${saludo}Estos son nuestros servicios:\n\n${listaSvcs}`;
+  if (t.includes('precio') || t.includes('cuánto') || t.includes('cuanto') || t.includes('cuesta') || t.includes('cobran') || t.includes('servicios')) {
+    return `${saludo}Nuestros servicios:\n\n${listaSvcs}`;
   }
-
   if (t.includes('horario') || t.includes('abren') || t.includes('atienden') || t.includes('días') || t.includes('dias')) {
     return `${saludo}Atendemos de lunes a sábado de 9am a 7pm.`;
   }
-
   if (t.match(/^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas tardes|buenas noches|buenos días|buenos dias|qué onda|que onda|quiubo|quiúbo)/) || t.length <= 5) {
     await setEstado(cliente.id, { paso:'inicio' });
     return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
   }
-
   if (t.match(/^(gracias|ok|okey|de nada|hasta luego|bye|adios|adiós|listo|perfecto|excelente|genial|👍|np|sale|va)$/)) {
     return `Con gusto! Que te vaya bien 😊`;
   }
@@ -638,7 +636,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   // ── MENSAJE NO RECONOCIDO — Claude ────────────────────────────
   const ia = await respuestaInteligente(mensaje, historial, cliente, estado, servicios);
   if (ia.intencion === 'disponibilidad') {
-    if (ia.fechaStr) {
+    if (ia.fechaStr && !fechaEsPasada(ia.fechaStr)) {
       const d = new Date(ia.fechaStr + 'T12:00:00');
       if (d.getDay() === 0) return `Los domingos no atendemos. De lunes a sábado 9am-7pm 😊`;
       return `Sí hay espacio el ${fechaLegible(ia.fechaStr)} 😊 ¿Te agendo una cita?`;
@@ -669,44 +667,30 @@ exports.handler = async (event) => {
 
     console.log(`MSG de ${from} (${tel}): ${mensaje}`);
 
-    // ── Activar sesión admin ─────────────────────────────────────
     if (mensaje.trim() === `/admin${ADMIN_PWD}`) {
       await setAdmin(tel, true);
       await setAdminBotOn(tel, false);
       await setAdminModoPrueba(tel, false);
-      console.log(`Admin activado: ${tel}`);
-      return {
-        statusCode:200, headers:{'Content-Type':'text/xml'},
-        body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>✅ Sesión admin iniciada!\n\nEscribe /ayuda para ver los comandos.</Body></Message></Response>`,
-      };
+      return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>✅ Sesión admin iniciada!\n\nEscribe /ayuda para ver los comandos.</Body></Message></Response>` };
     }
 
-    // ── Admin activo ─────────────────────────────────────────────
     const adminActivo = await esAdmin(tel);
     if (adminActivo) {
       if (mensaje.startsWith('/')) {
         const resp = await procesarComandoAdmin(mensaje, tel);
         return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${resp}</Body></Message></Response>` };
       }
-
       const modoPrueba = await getAdminModoPrueba(tel);
       if (modoPrueba) {
-        // Modo prueba: responde en WA pero NO guarda en app
-        const estado    = await getEstado(`prueba_${tel}`);
-        const historial = [];
-        const svcsJson  = await fsGet('servicios');
-        const servicios = (svcsJson.documents || []).map(parseDoc).filter(Boolean).filter(s => s.nombre);
-        const clientePrueba = { id: `prueba_${tel}`, nombre: 'Admin (prueba)', telefono: tel };
-        const respuesta = await procesarMensaje(mensaje, estado, clientePrueba, servicios, historial);
-        console.log(`Modo prueba respuesta: ${respuesta}`);
+        const estado = await getEstado(`prueba_${tel}`);
+        const svcsJson = await fsGet('servicios');
+        const servicios = (svcsJson.documents||[]).map(parseDoc).filter(Boolean).filter(s => s.nombre);
+        const clientePrueba = { id:`prueba_${tel}`, nombre:'Admin (prueba)', telefono: tel };
+        const respuesta = await procesarMensaje(mensaje, estado, clientePrueba, servicios, []);
         return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>` };
       }
-
       const botOn = await getAdminBotOn(tel);
-      if (!botOn) {
-        console.log('Admin bot OFF');
-        return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response></Response>` };
-      }
+      if (!botOn) return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response></Response>` };
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
       const response  = await anthropic.messages.create({
         model:'claude-sonnet-4-20250514', max_tokens:300,
@@ -717,24 +701,20 @@ exports.handler = async (event) => {
       return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${resp}</Body></Message></Response>` };
     }
 
-    // ── Flujo cliente ────────────────────────────────────────────
     let cliente = null;
     const clientesJson = await fsGet('clientes');
-    for (const doc of (clientesJson.documents || [])) {
-      const c      = parseDoc(doc);
+    for (const doc of (clientesJson.documents||[])) {
+      const c = parseDoc(doc);
       if (!c) continue;
-      const telDoc = normalizarTel(c.telefono || '');
+      const telDoc = normalizarTel(c.telefono||'');
       if (telDoc.length >= 8 && telDoc === tel) { cliente = c; break; }
     }
 
     if (!cliente) {
       const ref = await fsPost('clientes', {
-        nombre:   { stringValue: 'Desconocid@' },
-        telefono: { stringValue: tel },
-        email:    { stringValue: '' },
-        notas:    { stringValue: 'Registrad@ automáticamente por WhatsApp' },
-        visitas:  { integerValue: 0 },
-        puntos:   { integerValue: 0 },
+        nombre:   { stringValue: 'Desconocid@' }, telefono: { stringValue: tel },
+        email:    { stringValue: '' }, notas: { stringValue: 'Registrad@ automáticamente por WhatsApp' },
+        visitas:  { integerValue: 0 }, puntos: { integerValue: 0 },
         creadoEn: { timestampValue: new Date().toISOString() },
       });
       if (ref?.name) {
@@ -743,9 +723,7 @@ exports.handler = async (event) => {
       }
     }
 
-    if (!cliente) {
-      return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>Hola! Bienvenid@ a Barbería Zaira 💅</Body></Message></Response>` };
-    }
+    if (!cliente) return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>Hola! Bienvenid@ a Barbería Zaira 💅</Body></Message></Response>` };
 
     const botRes = await fsGet(`config_bot/${cliente.id}`);
     const botDoc = parseDoc(botRes);
@@ -757,25 +735,17 @@ exports.handler = async (event) => {
     const estado    = await getEstado(cliente.id);
     const historial = await getHistorial(cliente.id);
     const svcsJson  = await fsGet('servicios');
-    const servicios = (svcsJson.documents || []).map(parseDoc).filter(Boolean).filter(s => s.nombre);
+    const servicios = (svcsJson.documents||[]).map(parseDoc).filter(Boolean).filter(s => s.nombre);
 
     await guardarMsg(cliente.id, 'client', mensaje);
-
     const respuesta = await procesarMensaje(mensaje, estado, cliente, servicios, historial);
     console.log(`Respuesta: ${respuesta}`);
-
     await guardarMsg(cliente.id, 'bot', respuesta);
 
-    return {
-      statusCode:200, headers:{'Content-Type':'text/xml'},
-      body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>`,
-    };
+    return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>` };
 
   } catch (err) {
     console.error('Error en webhook:', err);
-    return {
-      statusCode:200, headers:{'Content-Type':'text/xml'},
-      body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>Ahorita no puedo responder. Intenta más tarde 🙏</Body></Message></Response>`,
-    };
+    return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>Ahorita no puedo responder. Intenta más tarde 🙏</Body></Message></Response>` };
   }
 };

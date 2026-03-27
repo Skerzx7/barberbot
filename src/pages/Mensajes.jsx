@@ -6,7 +6,7 @@ import { doc, setDoc, getDoc, collection, getDocs, deleteDoc } from 'firebase/fi
 import { db } from '../firebase';
 import { to12h } from '../mock/data';
 
-function Bubble({ msg }) {
+function Bubble({ msg, onDeleteBotMsg }) {
   const isRight = msg.de === 'owner' || msg.de === 'bot';
   const ts = msg.timestamp instanceof Date
     ? msg.timestamp.toLocaleTimeString('es-MX', { hour:'2-digit', minute:'2-digit' })
@@ -16,15 +16,57 @@ function Bubble({ msg }) {
     <div style={{ display:'flex', flexDirection:'column', maxWidth:'78%', gap:3, alignSelf: isRight?'flex-end':'flex-start', alignItems: isRight?'flex-end':'flex-start' }}>
       {msg.de === 'bot'   && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--green)', letterSpacing:'0.05em', padding:'0 4px' }}>🤖 bot {canal}</span>}
       {msg.de === 'owner' && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--gold)',  letterSpacing:'0.05em', padding:'0 4px' }}>✏️ tú {canal}</span>}
-      <div style={{
-        padding:'10px 14px', borderRadius:'var(--r-lg)',
-        borderBottomRightRadius: isRight ? 4 : 'var(--r-lg)',
-        borderBottomLeftRadius:  isRight ? 'var(--r-lg)' : 4,
-        background: msg.de==='owner' ? 'var(--gold-bg)' : msg.de==='bot' ? 'rgba(82,183,136,.08)' : 'var(--elevated)',
-        border:     msg.de==='owner' ? '1px solid var(--gold-b)' : msg.de==='bot' ? '1px solid rgba(82,183,136,.2)' : '1px solid var(--b-subtle)',
-      }}>
-        <p style={{ fontSize:'0.875rem', lineHeight:1.5, color:'var(--text)', whiteSpace:'pre-wrap', margin:0 }}>{msg.texto}</p>
-        <span style={{ fontSize:'0.6rem', color:'var(--muted)', marginTop:4, display:'block' }}>{ts}</span>
+      <div style={{ display:'flex', alignItems:'flex-end', gap:4, flexDirection: isRight ? 'row-reverse' : 'row' }}>
+        <div style={{
+          padding:'10px 14px', borderRadius:'var(--r-lg)',
+          borderBottomRightRadius: isRight ? 4 : 'var(--r-lg)',
+          borderBottomLeftRadius:  isRight ? 'var(--r-lg)' : 4,
+          background: msg.de==='owner' ? 'var(--gold-bg)' : msg.de==='bot' ? 'rgba(82,183,136,.08)' : 'var(--elevated)',
+          border:     msg.de==='owner' ? '1px solid var(--gold-b)' : msg.de==='bot' ? '1px solid rgba(82,183,136,.2)' : '1px solid var(--b-subtle)',
+        }}>
+          <p style={{ fontSize:'0.875rem', lineHeight:1.5, color:'var(--text)', whiteSpace:'pre-wrap', margin:0 }}>{msg.texto}</p>
+          <span style={{ fontSize:'0.6rem', color:'var(--muted)', marginTop:4, display:'block' }}>{ts}</span>
+        </div>
+        {msg.de === 'bot' && onDeleteBotMsg && (
+          <button
+            onClick={() => onDeleteBotMsg(msg.id)}
+            title="Borrar mensaje"
+            style={{ width:18, height:18, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-subtle)', color:'var(--muted)', fontSize:'0.55rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, opacity:0.4, transition:'all 150ms', marginBottom:4 }}
+            onMouseEnter={e => { e.currentTarget.style.opacity='1'; e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; e.currentTarget.style.borderColor='var(--red-b)'; }}
+            onMouseLeave={e => { e.currentTarget.style.opacity='0.4'; e.currentTarget.style.background='var(--overlay)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-subtle)'; }}
+          >✕</button>
+        )}
+      </div>
+    </div>
+  );
+}
+  return (
+    <div style={{ display:'flex', flexDirection:'column', maxWidth:'78%', gap:3, alignSelf: isRight?'flex-end':'flex-start', alignItems: isRight?'flex-end':'flex-start', position:'relative' }}
+      className="bubble-wrap"
+    >
+      {msg.de === 'bot'   && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--green)', letterSpacing:'0.05em', padding:'0 4px' }}>🤖 bot {canal}</span>}
+      {msg.de === 'owner' && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--gold)',  letterSpacing:'0.05em', padding:'0 4px' }}>✏️ tú {canal}</span>}
+      <div style={{ display:'flex', alignItems:'flex-end', gap:4, flexDirection: isRight ? 'row-reverse' : 'row' }}>
+        <div style={{
+          padding:'10px 14px', borderRadius:'var(--r-lg)',
+          borderBottomRightRadius: isRight ? 4 : 'var(--r-lg)',
+          borderBottomLeftRadius:  isRight ? 'var(--r-lg)' : 4,
+          background: msg.de==='owner' ? 'var(--gold-bg)' : msg.de==='bot' ? 'rgba(82,183,136,.08)' : 'var(--elevated)',
+          border:     msg.de==='owner' ? '1px solid var(--gold-b)' : msg.de==='bot' ? '1px solid rgba(82,183,136,.2)' : '1px solid var(--b-subtle)',
+        }}>
+          <p style={{ fontSize:'0.875rem', lineHeight:1.5, color:'var(--text)', whiteSpace:'pre-wrap', margin:0 }}>{msg.texto}</p>
+          <span style={{ fontSize:'0.6rem', color:'var(--muted)', marginTop:4, display:'block' }}>{ts}</span>
+        </div>
+        {/* Botón borrar solo mensajes del bot */}
+        {msg.de === 'bot' && onDeleteBotMsg && (
+          <button
+            onClick={() => onDeleteBotMsg(msg.id)}
+            title="Borrar mensaje"
+            style={{ width:20, height:20, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-subtle)', color:'var(--muted)', fontSize:'0.6rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, opacity:0.5, transition:'opacity 150ms' }}
+            onMouseEnter={e => { e.currentTarget.style.opacity='1'; e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
+            onMouseLeave={e => { e.currentTarget.style.opacity='0.5'; e.currentTarget.style.background='var(--overlay)'; e.currentTarget.style.color='var(--muted)'; }}
+          >✕</button>
+        )}
       </div>
     </div>
   );
@@ -59,11 +101,21 @@ export default function Mensajes() {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [messages, botTyping]);
   useEffect(() => { if (paramId) setSelectedId(paramId); }, [paramId]);
 
+ // Escuchar mensajes en tiempo real
   useEffect(() => {
     if (!selectedId) return;
     const unsub = listenMensajes(selectedId, setMessages);
     return unsub;
   }, [selectedId]);
+
+  // Borrar mensaje individual del bot
+  const handleDeleteBotMsg = async (msgId) => {
+    try {
+      await deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', msgId));
+    } catch(e) {
+      showToast('Error al borrar mensaje', 'error');
+    }
+  };
 
   useEffect(() => {
     if (!selectedId) return;
@@ -252,7 +304,7 @@ export default function Mensajes() {
                     {cliente?.telefono && <p style={{ fontSize:'0.72rem' }}>Cuando escriba al WhatsApp los mensajes aparecerán aquí.</p>}
                   </div>
                 )}
-                {messages.map(msg => <Bubble key={msg.id} msg={msg} />)}
+                {messages.map(msg => <Bubble key={msg.id} msg={msg} onDeleteBotMsg={handleDeleteBotMsg} />)}
                 {botTyping && (
                   <div style={{ alignSelf:'flex-end', maxWidth:'75%' }}>
                     <div style={{ padding:'12px 16px', borderRadius:'var(--r-lg)', borderBottomRightRadius:4, background:'rgba(82,183,136,.08)', border:'1px solid rgba(82,183,136,.2)', display:'flex', gap:4 }}>
