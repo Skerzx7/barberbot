@@ -1,19 +1,11 @@
 const Anthropic = require('@anthropic-ai/sdk');
 
 // ── Configuración ─────────────────────────────────────────────────
-const ADMINS = [
-  process.env.ADMIN_TEL_ZAIRA,
-  process.env.ADMIN_TEL_JUAN,
-].filter(Boolean);
-
-const NUMERO_BOT = process.env.TWILIO_SANDBOX_NUMBER || 'whatsapp:+14155238886';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin1307';
+const NUMERO_BOT     = process.env.TWILIO_SANDBOX_NUMBER || 'whatsapp:+14155238886';
 
 function normalizarTel(tel) {
   return tel.replace(/\D/g, '').replace(/^521?/, '').slice(-10);
-}
-
-function esAdmin(tel) {
-  return ADMINS.includes(normalizarTel(tel));
 }
 
 // ── Firestore REST ────────────────────────────────────────────────
@@ -42,6 +34,10 @@ async function fsPost(path, fields) {
     body:    JSON.stringify({ fields }),
   });
   return res.json();
+}
+
+async function fsDelete(path) {
+  await fetch(`${BASE_URL()}/${path}?key=${API_KEY()}`, { method: 'DELETE' });
 }
 
 function parseDoc(doc) {
@@ -82,9 +78,38 @@ async function enviarWA(to, body) {
 }
 
 async function notificarAdmins(msg) {
-  for (const tel of ADMINS) {
+  const adminTels = [process.env.ADMIN_TEL_ZAIRA, process.env.ADMIN_TEL_JUAN].filter(Boolean);
+  for (const tel of adminTels) {
     try { await enviarWA(tel, msg); } catch(e) { console.error('Error notif admin:', e); }
   }
+}
+
+// ── Estado de sesión admin ────────────────────────────────────────
+async function esAdmin(tel) {
+  try {
+    const res = await fsGet(`admin_sesion/${normalizarTel(tel)}`);
+    const doc = parseDoc(res);
+    return doc?.activo === true;
+  } catch {}
+  return false;
+}
+
+async function setAdmin(tel, activo) {
+  await fsSet(`admin_sesion/${normalizarTel(tel)}`, toFields({ activo }));
+}
+
+// ── Estado bot admin ON/OFF ───────────────────────────────────────
+async function getAdminBotOn(tel) {
+  try {
+    const res = await fsGet(`admin_bot/${normalizarTel(tel)}`);
+    const doc = parseDoc(res);
+    return doc?.activo === true;
+  } catch {}
+  return false;
+}
+
+async function setAdminBotOn(tel, activo) {
+  await fsSet(`admin_bot/${normalizarTel(tel)}`, toFields({ activo }));
 }
 
 // ── Estado de conversación ────────────────────────────────────────
@@ -97,7 +122,6 @@ async function getEstado(clienteId) {
   return { paso:'inicio', ultimoMensaje:'' };
 }
 
-// FIX: setEstado guarda ultimoMensaje UNA SOLA VEZ — no actualizar de nuevo al final del handler
 async function setEstado(clienteId, estado) {
   await fsSet(`conversacion_estado/${clienteId}`, toFields({
     paso:          estado.paso          || 'inicio',
@@ -110,22 +134,7 @@ async function setEstado(clienteId, estado) {
   }));
 }
 
-// ── Estado admin ──────────────────────────────────────────────────
-async function getAdminBot(tel) {
-  try {
-    const res = await fsGet(`admin_bot/${normalizarTel(tel)}`);
-    const doc = parseDoc(res);
-    return doc?.activo === true;
-  } catch {}
-  return false;
-}
-
-async function setAdminBot(tel, activo) {
-  await fsSet(`admin_bot/${normalizarTel(tel)}`, toFields({ activo }));
-}
-
-// ── Guardar mensaje compatible con la app ─────────────────────────
-// FIX: usar timestampValue para que la app lo lea correctamente
+// ── Guardar mensaje compatible con app ────────────────────────────
 async function guardarMsg(clienteId, de, texto) {
   if (!clienteId) return;
   await fsPost(`clientes/${clienteId}/mensajes`, {
@@ -136,7 +145,7 @@ async function guardarMsg(clienteId, de, texto) {
   });
 }
 
-// ── Helpers de fecha/hora ─────────────────────────────────────────
+// ── Helpers fecha/hora ────────────────────────────────────────────
 function parsearFecha(texto) {
   const t   = texto.toLowerCase().trim();
   const hoy = new Date();
@@ -148,7 +157,7 @@ function parsearFecha(texto) {
   }
   for (const [nombre, num] of Object.entries(dias)) {
     if (t.includes(nombre)) {
-      const d    = new Date(hoy);
+      const d = new Date(hoy);
       const diff = (num - d.getDay() + 7) % 7 || 7;
       d.setDate(d.getDate() + diff);
       return formatFecha(d);
@@ -209,7 +218,6 @@ function horaLegible(hora) {
   return m === 0 ? `${h12}${ampm}` : `${h12}:${String(m).padStart(2,'0')}${ampm}`;
 }
 
-// ── Extraer info de mensaje libre ─────────────────────────────────
 function extraerInfoCita(texto, servicios) {
   const info = {};
   const fecha = parsearFecha(texto);
@@ -228,14 +236,12 @@ function extraerInfoCita(texto, servicios) {
   return info;
 }
 
-// ── Verificar disponibilidad ──────────────────────────────────────
 async function verificarDisponibilidad(fechaStr, hora) {
   const res   = await fsGet('citas');
   const citas = (res.documents || []).map(parseDoc).filter(Boolean);
   return !citas.some(c => c.fechaStr === fechaStr && c.hora === hora && c.estado !== 'cancelled');
 }
 
-// ── Crear cita ────────────────────────────────────────────────────
 async function crearCita(clienteId, clienteNombre, servicio, precio, fechaStr, hora) {
   return fsPost('citas', toFields({
     clientId:      clienteId || '',
@@ -255,12 +261,17 @@ async function procesarComandoAdmin(comando, from) {
   const cmd = comando.trim().toLowerCase();
 
   if (cmd === '/on') {
-    await setAdminBot(from, true);
-    return '✅ Bot ON — ahora responderé tus mensajes.';
+    await setAdminBotOn(from, true);
+    return '✅ Bot ON — ahora responderé tus mensajes como IA.';
   }
   if (cmd === '/off') {
-    await setAdminBot(from, false);
+    await setAdminBotOn(from, false);
     return '⛔ Bot OFF — ya no responderé tus mensajes.';
+  }
+  if (cmd === '/salir') {
+    await setAdmin(from, false);
+    await setAdminBotOn(from, false);
+    return '👋 Sesión admin cerrada.';
   }
   if (cmd === '/citas') {
     const hoyStr  = formatFecha(new Date());
@@ -287,12 +298,12 @@ async function procesarComandoAdmin(comando, from) {
     return `👥 Clientas registradas: ${clientes.length}`;
   }
   if (cmd === '/ayuda') {
-    return `/on — Bot te responde\n/off — Bot te ignora\n/citas — Citas de hoy\n/mañana — Citas de mañana\n/clientes — Total clientas\n/ayuda — Esta lista`;
+    return `Comandos admin:\n\n/on — Bot te responde como IA\n/off — Bot te ignora\n/citas — Citas de hoy\n/mañana — Citas de mañana\n/clientes — Total clientas\n/salir — Cerrar sesión admin\n/ayuda — Esta lista`;
   }
   return `Comando no reconocido. Escribe /ayuda.`;
 }
 
-// ── Lógica del bot ────────────────────────────────────────────────
+// ── Lógica del bot para clientes ─────────────────────────────────
 async function procesarMensaje(mensaje, estado, cliente, servicios) {
   const t     = mensaje.toLowerCase().trim();
   const ahora = new Date();
@@ -301,10 +312,9 @@ async function procesarMensaje(mensaje, estado, cliente, servicios) {
     ? (ahora.getTime() - new Date(estado.ultimoMensaje).getTime()) / 60000
     : 999;
 
-  // FIX: solo saluda si es la primera vez o pasaron 4+ horas
-  const saludar   = !estado.ultimoMensaje || minutos > 240;
-  const nombre    = cliente?.nombre?.split(' ')[0] || '';
-  const saludo    = saludar ? `Hola${nombre ? ` ${nombre}` : ''}! 😊\n\n` : '';
+  const saludar = !estado.ultimoMensaje || minutos > 240;
+  const nombre  = cliente?.nombre && cliente.nombre !== 'Desconocido' ? ` ${cliente.nombre.split(' ')[0]}` : '';
+  const saludo  = saludar ? `Hola${nombre}! 😊\n\n` : '';
 
   const svcs      = servicios.filter(s => s.nombre);
   const listaSvcs = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`).join('\n');
@@ -323,8 +333,8 @@ async function procesarMensaje(mensaje, estado, cliente, servicios) {
 
     if (!svc) {
       if (t.includes('tinte') || t.includes('color') || t.includes('permanente') || t.includes('keratina') || t.includes('especial') || t.includes('otro')) {
-        await setEstado(cliente?.id || 'unknown', { paso:'inicio' });
-        await notificarAdmins(`💬 Servicio especial de ${cliente?.nombre || 'clienta'}:\n"${mensaje}"\n📱 ${cliente?.telefono || 'Sin tel'}`);
+        await setEstado(cliente?.id||'unknown', { paso:'inicio' });
+        await notificarAdmins(`💬 Servicio especial de ${cliente?.nombre||'clienta'}:\n"${mensaje}"\n📱 ${cliente?.telefono||'Sin tel'}`);
         return `Para ese servicio especial Zaira te atiende personalmente. En breve te contacta 🙏`;
       }
       return `No encontré ese servicio 😅 Elige un número o escribe el nombre:\n\n${listaSvcs}`;
@@ -409,7 +419,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios) {
   if (quiereAgendar) {
     if (infoEx.servicio && infoEx.fechaStr && infoEx.hora) {
       const d = new Date(infoEx.fechaStr + 'T12:00:00');
-      if (d.getDay() === 0) { await setEstado(cliente?.id||'unknown', {paso:'esperando_fecha', servicio:infoEx.servicio, precio:infoEx.precio}); return `Los domingos no atendemos. ¿Qué otro día?`; }
+      if (d.getDay() === 0) { await setEstado(cliente?.id||'unknown', {paso:'esperando_fecha', ...infoEx}); return `Los domingos no atendemos. ¿Qué otro día?`; }
       const ok = await verificarDisponibilidad(infoEx.fechaStr, infoEx.hora);
       if (!ok) { await setEstado(cliente?.id||'unknown', {paso:'esperando_hora', ...infoEx}); return `Ese horario ya está ocupado 😬 ¿Tienes otro? Atendemos de 9am a 8pm.`; }
       await setEstado(cliente?.id||'unknown', {paso:'confirmando', ...infoEx});
@@ -433,14 +443,13 @@ async function procesarMensaje(mensaje, estado, cliente, servicios) {
 
   if (t.match(/^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas tardes|buenas noches|buenos días|buenos dias)/) || t.length <= 5) {
     await setEstado(cliente?.id||'unknown', { paso:'inicio' });
-    return `${saludo}Bienvenida a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
+    return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
   }
 
   if (t.match(/^(gracias|ok|okey|de nada|hasta luego|bye|adios|adiós|listo|perfecto|excelente|genial|👍)$/)) {
     return `Con gusto! Que tengas buen día 😊`;
   }
 
-  // Mensaje no reconocido — notificar a admins
   await notificarAdmins(`❓ Mensaje sin respuesta de ${cliente?.nombre||'clienta nueva'}:\n"${mensaje}"\n📱 ${cliente?.telefono||'Sin tel'}`);
   return `Ahorita no tengo respuesta para eso 😅 Zaira te puede ayudar, en breve se pone en contacto 🙏`;
 }
@@ -459,13 +468,24 @@ exports.handler = async (event) => {
 
     console.log(`Mensaje de ${from} (${tel}): ${mensaje}`);
 
-    // ── ADMIN ────────────────────────────────────────────────────
-    if (esAdmin(tel)) {
+    // ── VERIFICAR CONTRASEÑA ADMIN ───────────────────────────────
+    if (mensaje === `/admin${ADMIN_PASSWORD}` || mensaje === `/admin${process.env.ADMIN_PASSWORD}`) {
+      await setAdmin(from, true);
+      await setAdminBotOn(from, false);
+      return {
+        statusCode:200, headers:{'Content-Type':'text/xml'},
+        body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>✅ Sesión admin iniciada!\n\nEscribe /ayuda para ver los comandos disponibles.</Body></Message></Response>`,
+      };
+    }
+
+    // ── ADMIN ACTIVO ─────────────────────────────────────────────
+    const adminActivo = await esAdmin(tel);
+    if (adminActivo) {
       if (mensaje.startsWith('/')) {
         const respuesta = await procesarComandoAdmin(mensaje, from);
         return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>` };
       }
-      const botOn = await getAdminBot(from);
+      const botOn = await getAdminBotOn(from);
       if (!botOn) {
         console.log('Admin bot OFF');
         return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response></Response>` };
@@ -483,16 +503,32 @@ exports.handler = async (event) => {
     // ── CLIENTE ──────────────────────────────────────────────────
     let cliente = null;
     const clientesJson = await fsGet('clientes');
-    console.log(`Buscando cliente con tel: ${tel}`);
     for (const doc of (clientesJson.documents || [])) {
       const c      = parseDoc(doc);
       if (!c) continue;
       const telDoc = normalizarTel(c.telefono || '');
-      console.log(`Comparando: [${telDoc}] vs [${tel}]`);
       if (telDoc.length >= 8 && telDoc === tel) { cliente = c; break; }
     }
-    console.log(`Cliente encontrado: ${cliente ? cliente.nombre : 'NO ENCONTRADO'}`);
 
+    // Crear cliente automáticamente si no existe
+    if (!cliente) {
+      const nuevoRef = await fsPost('clientes', {
+        nombre:   { stringValue: 'Desconocid@' },
+        telefono: { stringValue: tel },
+        email:    { stringValue: '' },
+        notas:    { stringValue: 'Registrad@ automáticamente por WhatsApp' },
+        visitas:  { integerValue: 0 },
+        puntos:   { integerValue: 0 },
+        creadoEn: { timestampValue: new Date().toISOString() },
+      });
+      if (nuevoRef?.name) {
+        cliente = { id: nuevoRef.name.split('/').pop(), nombre: 'Desconocid@', telefono: tel };
+        console.log(`Cliente nuevo: ${cliente.id}`);
+        await notificarAdmins(`👤 Nuev@ contacto por WhatsApp!\n📱 +52${tel}\nRegistrad@ como "Desconocid@" — edítalo en la app.`);
+      }
+    }
+
+    // Verificar si bot está activo para este cliente
     if (cliente) {
       const botRes = await fsGet(`config_bot/${cliente.id}`);
       const botDoc = parseDoc(botRes);
@@ -502,30 +538,26 @@ exports.handler = async (event) => {
       }
     }
 
-    // FIX: obtener estado ANTES de guardar el mensaje para leer ultimoMensaje correcto
-    const estado   = cliente ? await getEstado(cliente.id) : { paso:'inicio', ultimoMensaje:'' };
-    const svcsJson = await fsGet('servicios');
+    const estado    = cliente ? await getEstado(cliente.id) : { paso:'inicio', ultimoMensaje:'' };
+    const svcsJson  = await fsGet('servicios');
     const servicios = (svcsJson.documents || []).map(parseDoc).filter(Boolean).filter(s => s.nombre);
 
-    // Guardar mensaje entrante
-    await guardarMsg(cliente?.id || null, 'client', mensaje);
+    await guardarMsg(cliente?.id||null, 'client', mensaje);
 
-    // Procesar — setEstado se llama dentro y actualiza ultimoMensaje
     const respuesta = await procesarMensaje(mensaje, estado, cliente, servicios);
     console.log(`Respuesta: ${respuesta}`);
 
-    // Guardar respuesta
-    await guardarMsg(cliente?.id || null, 'bot', respuesta);
+    await guardarMsg(cliente?.id||null, 'bot', respuesta);
 
-    // FIX: NO actualizar estado aquí — ya se actualizó dentro de procesarMensaje
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>`;
-    return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:twiml };
+    return {
+      statusCode:200, headers:{'Content-Type':'text/xml'},
+      body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>`,
+    };
 
   } catch (err) {
     console.error('Error en webhook:', err);
     return {
-      statusCode:200,
-      headers:{'Content-Type':'text/xml'},
+      statusCode:200, headers:{'Content-Type':'text/xml'},
       body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message><Body>En este momento no puedo responder. Intenta más tarde 🙏</Body></Message></Response>`,
     };
   }

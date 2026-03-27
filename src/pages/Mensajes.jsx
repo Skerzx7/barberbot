@@ -186,11 +186,33 @@ export default function Mensajes() {
                 </div>
 
                 {/* Toggle Bot */}
+                {/* Editar cliente */}
                 <button
-                  onClick={toggleBot}
-                  disabled={loadingBot}
-                  style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: botEnabled ? 'var(--green-bg)' : 'var(--elevated)', color: botEnabled ? 'var(--green)' : 'var(--muted)', border: botEnabled ? '1px solid var(--green-b)' : '1px solid var(--b-soft)', opacity: loadingBot ? 0.5 : 1, transition:'all 200ms' }}
-                >
+                  onClick={() => navigate(`/clientes/${selectedId}`)}
+                  style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-soft)', color:'var(--muted)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                  onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; e.currentTarget.style.borderColor='var(--gold-b)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
+                >✏️</button>
+
+                {/* Borrar conversación */}
+                <button
+                  onClick={async () => {
+                    if (!window.confirm('¿Borrar toda la conversación?')) return;
+                    try {
+                      const { collection, getDocs, deleteDoc, doc } = await import('firebase/firestore');
+                      const { db } = await import('../firebase');
+                      const snap = await getDocs(collection(db, 'clientes', selectedId, 'mensajes'));
+                      await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', d.id))));
+                      showToast('Conversación borrada', 'info');
+                    } catch(e) { showToast('Error al borrar', 'error'); }
+                  }}
+                  style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-soft)', color:'var(--muted)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                  onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; e.currentTarget.style.borderColor='var(--red-b)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
+                >🗑</button>
+
+                {/* Toggle Bot */}
+                <button onClick={toggleBot} disabled={loadingBot} style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: botEnabled ? 'var(--green-bg)' : 'var(--elevated)', color: botEnabled ? 'var(--green)' : 'var(--muted)', border: botEnabled ? '1px solid var(--green-b)' : '1px solid var(--b-soft)', opacity: loadingBot ? 0.5 : 1, transition:'all 200ms' }}>
                   🤖 {botEnabled ? 'Bot ON' : 'Bot OFF'}
                 </button>
               </div>
