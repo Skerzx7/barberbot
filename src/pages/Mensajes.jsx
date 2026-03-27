@@ -40,37 +40,6 @@ function Bubble({ msg, onDeleteBotMsg }) {
     </div>
   );
 }
-  return (
-    <div style={{ display:'flex', flexDirection:'column', maxWidth:'78%', gap:3, alignSelf: isRight?'flex-end':'flex-start', alignItems: isRight?'flex-end':'flex-start', position:'relative' }}
-      className="bubble-wrap"
-    >
-      {msg.de === 'bot'   && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--green)', letterSpacing:'0.05em', padding:'0 4px' }}>🤖 bot {canal}</span>}
-      {msg.de === 'owner' && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--gold)',  letterSpacing:'0.05em', padding:'0 4px' }}>✏️ tú {canal}</span>}
-      <div style={{ display:'flex', alignItems:'flex-end', gap:4, flexDirection: isRight ? 'row-reverse' : 'row' }}>
-        <div style={{
-          padding:'10px 14px', borderRadius:'var(--r-lg)',
-          borderBottomRightRadius: isRight ? 4 : 'var(--r-lg)',
-          borderBottomLeftRadius:  isRight ? 'var(--r-lg)' : 4,
-          background: msg.de==='owner' ? 'var(--gold-bg)' : msg.de==='bot' ? 'rgba(82,183,136,.08)' : 'var(--elevated)',
-          border:     msg.de==='owner' ? '1px solid var(--gold-b)' : msg.de==='bot' ? '1px solid rgba(82,183,136,.2)' : '1px solid var(--b-subtle)',
-        }}>
-          <p style={{ fontSize:'0.875rem', lineHeight:1.5, color:'var(--text)', whiteSpace:'pre-wrap', margin:0 }}>{msg.texto}</p>
-          <span style={{ fontSize:'0.6rem', color:'var(--muted)', marginTop:4, display:'block' }}>{ts}</span>
-        </div>
-        {/* Botón borrar solo mensajes del bot */}
-        {msg.de === 'bot' && onDeleteBotMsg && (
-          <button
-            onClick={() => onDeleteBotMsg(msg.id)}
-            title="Borrar mensaje"
-            style={{ width:20, height:20, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-subtle)', color:'var(--muted)', fontSize:'0.6rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, opacity:0.5, transition:'opacity 150ms' }}
-            onMouseEnter={e => { e.currentTarget.style.opacity='1'; e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
-            onMouseLeave={e => { e.currentTarget.style.opacity='0.5'; e.currentTarget.style.background='var(--overlay)'; e.currentTarget.style.color='var(--muted)'; }}
-          >✕</button>
-        )}
-      </div>
-    </div>
-  );
-}
 
 export default function Mensajes() {
   const { id: paramId } = useParams();
@@ -101,21 +70,11 @@ export default function Mensajes() {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [messages, botTyping]);
   useEffect(() => { if (paramId) setSelectedId(paramId); }, [paramId]);
 
- // Escuchar mensajes en tiempo real
   useEffect(() => {
     if (!selectedId) return;
     const unsub = listenMensajes(selectedId, setMessages);
     return unsub;
   }, [selectedId]);
-
-  // Borrar mensaje individual del bot
-  const handleDeleteBotMsg = async (msgId) => {
-    try {
-      await deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', msgId));
-    } catch(e) {
-      showToast('Error al borrar mensaje', 'error');
-    }
-  };
 
   useEffect(() => {
     if (!selectedId) return;
@@ -125,6 +84,14 @@ export default function Mensajes() {
       setLoadingBot(false);
     }).catch(() => setLoadingBot(false));
   }, [selectedId]);
+
+  const handleDeleteBotMsg = async (msgId) => {
+    try {
+      await deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', msgId));
+    } catch(e) {
+      showToast('Error al borrar mensaje', 'error');
+    }
+  };
 
   const toggleBot = async () => {
     if (!selectedId) return;
@@ -150,7 +117,6 @@ export default function Mensajes() {
     }
   };
 
-  // FIX: Respuesta IA usa Claude con el último mensaje real del cliente
   const handleBotReply = async () => {
     if (!selectedId || !cliente || loadingIA) return;
     const lastClientMsg = [...messages].reverse().find(m => m.de === 'client');
@@ -165,17 +131,15 @@ export default function Mensajes() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          clienteId:  selectedId,
           clienteNombre: cliente.nombre,
-          mensaje:    lastClientMsg.texto,
-          historial:  messages.slice(-10).map(m => ({ de: m.de, texto: m.texto })),
-          servicios:  servicios.map(s => ({ nombre: s.nombre, precio: s.precio, emoji: s.emoji })),
+          mensaje:       lastClientMsg.texto,
+          historial:     messages.slice(-10).map(m => ({ de: m.de, texto: m.texto })),
+          servicios:     servicios.map(s => ({ nombre: s.nombre, precio: s.precio, emoji: s.emoji })),
         }),
       });
       const data = await res.json();
       if (data.respuesta) {
         await enviarMensaje(selectedId, { de:'bot', texto: data.respuesta, canal:'app' });
-        // Si bot OFF, mandar también por WhatsApp
         if (!botEnabled && cliente?.telefono) {
           await fetch('/.netlify/functions/send-whatsapp', {
             method: 'POST',
@@ -193,7 +157,6 @@ export default function Mensajes() {
     }
   };
 
-  // FIX: Borrar conversación usando imports estáticos (no dinámicos)
   const handleBorrarConversacion = async () => {
     if (!window.confirm('¿Borrar toda la conversación? Esta acción no se puede deshacer.')) return;
     try {
@@ -202,7 +165,6 @@ export default function Mensajes() {
       setMessages([]);
       showToast('Conversación borrada', 'info');
     } catch(e) {
-      console.error(e);
       showToast('Error al borrar la conversación', 'error');
     }
   };
@@ -213,7 +175,6 @@ export default function Mensajes() {
   return (
     <div style={{ display:'flex', height:`calc(100dvh - var(--topbar) - ${isMobile ? 'var(--botnav)' : '0px'})`, margin: isMobile ? '-20px -16px' : '-28px -32px', overflow:'hidden' }}>
 
-      {/* Lista de clientes */}
       {(!isMobile || !selectedId) && (
         <aside style={{ width: isMobile ? '100%' : 280, borderRight:'1px solid var(--b-subtle)', display:'flex', flexDirection:'column', background:'var(--surface)', flexShrink:0 }}>
           <div style={{ padding:'16px 16px 12px', borderBottom:'1px solid var(--b-subtle)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
@@ -237,7 +198,6 @@ export default function Mensajes() {
         </aside>
       )}
 
-      {/* Chat */}
       {(!isMobile || selectedId) && (
         <section style={{ flex:1, display:'flex', flexDirection:'column', minWidth:0, background:'var(--bg)' }}>
           {!selectedId ? (
@@ -247,7 +207,6 @@ export default function Mensajes() {
             </div>
           ) : (
             <>
-              {/* Header */}
               <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 16px', borderBottom:'1px solid var(--b-subtle)', background:'var(--surface)' }}>
                 {isMobile && (
                   <button onClick={() => { setSelectedId(null); navigate('/mensajes'); }} style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-subtle)', color:'var(--text2)', fontSize:'0.9rem', flexShrink:0 }}>←</button>
@@ -261,42 +220,31 @@ export default function Mensajes() {
                   {cliente?.telefono && <div style={{ fontSize:'0.7rem', color:'var(--muted)' }}>📱 {cliente.telefono}</div>}
                 </div>
 
-                {/* Editar cliente */}
-                <button
-                  onClick={() => navigate(`/clientes/${selectedId}`)}
-                  title="Editar cliente"
+                <button onClick={() => navigate(`/clientes/${selectedId}`)} title="Editar cliente"
                   style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-soft)', color:'var(--muted)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
                   onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; e.currentTarget.style.borderColor='var(--gold-b)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
                 >✏️</button>
 
-                {/* Borrar conversación */}
-                <button
-                  onClick={handleBorrarConversacion}
-                  title="Borrar conversación"
+                <button onClick={handleBorrarConversacion} title="Borrar conversación"
                   style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-soft)', color:'var(--muted)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
                   onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; e.currentTarget.style.borderColor='var(--red-b)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
                 >🗑</button>
 
-                {/* Toggle Bot */}
-                <button
-                  onClick={toggleBot}
-                  disabled={loadingBot}
+                <button onClick={toggleBot} disabled={loadingBot}
                   style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: botEnabled ? 'var(--green-bg)' : 'var(--elevated)', color: botEnabled ? 'var(--green)' : 'var(--muted)', border: botEnabled ? '1px solid var(--green-b)' : '1px solid var(--b-soft)', opacity: loadingBot ? 0.5 : 1, transition:'all 200ms', flexShrink:0 }}
                 >
                   🤖 {botEnabled ? 'Bot ON' : 'Bot OFF'}
                 </button>
               </div>
 
-              {/* Banner modo manual */}
               {!botEnabled && (
                 <div style={{ padding:'8px 16px', background:'var(--gold-bg)', borderBottom:'1px solid var(--gold-b)', fontSize:'0.75rem', color:'var(--gold)', display:'flex', alignItems:'center', gap:6 }}>
                   ✏️ Modo manual — estás respondiendo como Zaira
                 </div>
               )}
 
-              {/* Mensajes */}
               <div style={{ flex:1, overflowY:'auto', padding:'20px 16px', display:'flex', flexDirection:'column', gap:8 }}>
                 {messages.length === 0 && (
                   <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, padding:20, color:'var(--muted)', fontSize:'0.8rem', textAlign:'center' }}>
@@ -315,13 +263,10 @@ export default function Mensajes() {
                 <div ref={endRef} />
               </div>
 
-              {/* Input */}
               <div style={{ padding:'12px 16px', borderTop:'1px solid var(--b-subtle)', background:'var(--surface)', display:'flex', flexDirection:'column', gap:8 }}>
                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  <button
-                    onClick={handleBotReply}
-                    disabled={botTyping || loadingIA}
-                    style={{ display:'flex', alignItems:'center', gap:5, height:28, padding:'0 12px', background:'var(--green-bg)', color:'var(--green)', border:'1px solid var(--green-b)', borderRadius:'var(--r-full)', fontSize:'0.72rem', fontWeight:600, fontFamily:'var(--font-b)', opacity: (botTyping||loadingIA) ? 0.4 : 1, transition:'opacity 200ms' }}
+                  <button onClick={handleBotReply} disabled={botTyping || loadingIA}
+                    style={{ display:'flex', alignItems:'center', gap:5, height:28, padding:'0 12px', background:'var(--green-bg)', color:'var(--green)', border:'1px solid var(--green-b)', borderRadius:'var(--r-full)', fontSize:'0.72rem', fontWeight:600, fontFamily:'var(--font-b)', opacity:(botTyping||loadingIA)?0.4:1, transition:'opacity 200ms' }}
                   >
                     {loadingIA ? '⏳ Generando...' : '⚡ Respuesta IA'}
                   </button>
@@ -339,10 +284,8 @@ export default function Mensajes() {
                     onKeyDown={onKey}
                     rows={1}
                   />
-                  <button
-                    onClick={handleSend}
-                    disabled={!input.trim()}
-                    style={{ width:40, height:40, background: input.trim() ? 'var(--gold)' : 'var(--elevated)', color: input.trim() ? '#000' : 'var(--muted)', borderRadius:'var(--r-md)', fontSize:'1rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all 150ms', opacity: input.trim() ? 1 : 0.3 }}
+                  <button onClick={handleSend} disabled={!input.trim()}
+                    style={{ width:40, height:40, background: input.trim()?'var(--gold)':'var(--elevated)', color: input.trim()?'#000':'var(--muted)', borderRadius:'var(--r-md)', fontSize:'1rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, transition:'all 150ms', opacity: input.trim()?1:0.3 }}
                   >➤</button>
                 </div>
               </div>
