@@ -1,152 +1,194 @@
-import {
-  collection, doc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, serverTimestamp,
-  setDoc, increment,
-} from 'firebase/firestore';
-import { db } from '../firebase';
+import { useState } from 'react';
+import { useApp } from '../context/AppContext';
 
-// ── CLIENTES ──────────────────────────────────────────────────────
-export function listenClientes(callback) {
-  const q = query(collection(db, 'clientes'));
-  return onSnapshot(q, snap => {
-    const data = snap.docs.map(d => ({
-      id: d.id,
-      ...d.data(),
-      creadoEn: d.data().creadoEn?.toDate ? d.data().creadoEn.toDate() : new Date(),
-    }));
-    data.sort((a, b) => new Date(b.creadoEn) - new Date(a.creadoEn));
-    callback(data);
-  }, err => console.error('listenClientes error:', err));
-}
+const EMOJIS = ['✂️','🪒','💈','⚡','✨','👦','💇','🧴','💆','🎨'];
 
-export async function crearCliente(data) {
-  return addDoc(collection(db, 'clientes'), {
-    nombre:   data.nombre   || '',
-    telefono: data.telefono || '',
-    email:    data.email    || '',
-    notas:    data.notas    || '',
-    visitas:  0,
-    puntos:   0,
-    creadoEn: serverTimestamp(),
-  });
-}
+export default function Configuracion() {
+  const { showToast, servicios, guardarServicio, eliminarServicio } = useApp();
 
-export async function actualizarClienteFS(id, data) {
-  const { id: _id, creadoEn, ...rest } = data;
-  return updateDoc(doc(db, 'clientes', id), rest);
-}
+  const [editandoId, setEditandoId] = useState(null);
+  const [form,       setForm]       = useState({});
+  const [saving,     setSaving]     = useState(false);
+  const [agregando,  setAgregando]  = useState(false);
+  const [nuevoForm,  setNuevoForm]  = useState({ nombre:'', precio:'', duracion:'30', emoji:'✂️' });
 
-export async function eliminarClienteFS(id) {
-  return deleteDoc(doc(db, 'clientes', id));
-}
+  const abrirEditar = (svc) => {
+    setEditandoId(svc.id);
+    setForm({ nombre: svc.nombre, precio: String(svc.precio), duracion: String(svc.duracion||30), emoji: svc.emoji||'✂️' });
+  };
 
-export async function sumarPuntosCliente(clienteId, puntos = 10) {
-  return updateDoc(doc(db, 'clientes', clienteId), {
-    puntos:  increment(puntos),
-    visitas: increment(1),
-  });
-}
+  const handleGuardar = async (id) => {
+    // FIX: validar precio antes de guardar
+    const precio = Number(form.precio);
+    if (!form.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
+    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser un número mayor a 0', 'error'); return; }
+    setSaving(true);
+    try {
+      await guardarServicio(id, { ...form, precio });
+      setEditandoId(null);
+      showToast('Servicio guardado ✓', 'success');
+    } catch(err) {
+      showToast(err.message || 'Error al guardar', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
 
-// ── CITAS ─────────────────────────────────────────────────────────
-export function listenCitas(callback) {
-  const q = query(collection(db, 'citas'));
-  return onSnapshot(q, snap => {
-    const data = snap.docs.map(d => ({
-      id: d.id,
-      ...d.data(),
-      fecha: d.data().fechaStr
-        ? new Date(d.data().fechaStr + 'T12:00:00')
-        : d.data().fecha?.toDate
-          ? d.data().fecha.toDate()
-          : new Date(d.data().fecha || Date.now()),
-    }));
-    data.sort((a, b) => new Date(a.fecha) - new Date(b.fecha));
-    callback(data);
-  }, err => console.error('listenCitas error:', err));
-}
+  const handleEliminar = async (id, nombre) => {
+    if (!window.confirm(`¿Eliminar "${nombre}"?`)) return;
+    try {
+      await eliminarServicio(id);
+      showToast('Servicio eliminado', 'info');
+    } catch(err) {
+      showToast('Error al eliminar', 'error');
+    }
+  };
 
-export async function crearCita(data) {
-  const fechaDate = data.fecha instanceof Date ? data.fecha : new Date(data.fecha);
-  const fechaStr  = `${fechaDate.getFullYear()}-${String(fechaDate.getMonth()+1).padStart(2,'0')}-${String(fechaDate.getDate()).padStart(2,'0')}`;
-  return addDoc(collection(db, 'citas'), {
-    clientId:      data.clientId      || null,
-    clienteNombre: data.clienteNombre || 'Cliente',
-    servicio:      data.servicio      || '',
-    precio:        Number(data.precio)   || 0,
-    duracion:      Number(data.duracion) || 30,
-    hora:          data.hora          || '09:00',
-    fechaStr,
-    fecha:         fechaDate,
-    estado:        'confirmed',
-    creadoEn:      serverTimestamp(),
-  });
-}
+  const handleAgregar = async () => {
+    const precio = Number(nuevoForm.precio);
+    if (!nuevoForm.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
+    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser un número mayor a 0', 'error'); return; }
+    setSaving(true);
+    try {
+      await guardarServicio(null, { ...nuevoForm, precio });
+      setAgregando(false);
+      setNuevoForm({ nombre:'', precio:'', duracion:'30', emoji:'✂️' });
+      showToast('Servicio agregado ✓', 'success');
+    } catch(err) {
+      showToast(err.message || 'Error al agregar', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
 
-export async function actualizarCita(id, data) {
-  return updateDoc(doc(db, 'citas', id), data);
-}
+  const inp = {
+    background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)',
+    padding:'0 12px', color:'var(--text)', fontSize:'0.875rem', fontFamily:'var(--font-b)',
+  };
 
-// ── SERVICIOS ─────────────────────────────────────────────────────
-export function listenServicios(callback) {
-  const q = query(collection(db, 'servicios'));
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => ({
-      id: d.id,
-      ...d.data(),
-      precio:   Number(d.data().precio)   || 0,
-      duracion: Number(d.data().duracion) || 30,
-    })));
-  }, err => console.error('listenServicios error:', err));
-}
-
-export async function crearServicio(data) {
-  return addDoc(collection(db, 'servicios'), {
-    nombre:   data.nombre   || 'Servicio',
-    precio:   Number(data.precio)   || 0,
-    duracion: Number(data.duracion) || 30,
-    emoji:    data.emoji    || '✂️',
-    activo:   true,
-  });
-}
-
-export async function actualizarServicio(id, data) {
-  return updateDoc(doc(db, 'servicios', id), {
-    nombre:   data.nombre,
-    precio:   Number(data.precio),
-    duracion: Number(data.duracion),
-    emoji:    data.emoji,
-  });
-}
-
-export async function eliminarServicio(id) {
-  return deleteDoc(doc(db, 'servicios', id));
-}
-
-// ── MENSAJES ──────────────────────────────────────────────────────
-export function listenMensajes(clienteId, callback) {
-  if (!clienteId) return () => {};
-  const q = query(
-    collection(db, 'clientes', clienteId, 'mensajes'),
-    orderBy('timestamp', 'asc')
+  const section = (title, emoji, children) => (
+    <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-xl)', padding:20, display:'flex', flexDirection:'column', gap:16 }}>
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        <span>{emoji}</span>
+        <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1rem', fontWeight:500, flex:1 }}>{title}</h3>
+      </div>
+      {children}
+    </div>
   );
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => ({
-      id: d.id,
-      ...d.data(),
-      timestamp: d.data().timestamp?.toDate ? d.data().timestamp.toDate() : new Date(),
-    })));
-  }, err => console.error('listenMensajes error:', err));
-}
 
-export async function enviarMensaje(clienteId, data) {
-  return addDoc(collection(db, 'clientes', clienteId, 'mensajes'), {
-    de:        data.de    || 'owner',
-    texto:     data.texto || '',
-    timestamp: serverTimestamp(),
-  });
-}
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:20, animation:'fadeIn .3s var(--ease) both', maxWidth:640 }}>
 
-// ── CONFIG ────────────────────────────────────────────────────────
-export async function guardarConfig(data) {
-  return setDoc(doc(db, 'config', 'negocio'), data, { merge: true });
+      {section('Catálogo de servicios', '💈', (
+        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+          {servicios.length === 0 && (
+            <p style={{ fontSize:'0.8rem', color:'var(--muted)', textAlign:'center', padding:12 }}>Sin servicios aún. Agrega el primero.</p>
+          )}
+
+          {servicios.map(svc => (
+            <div key={svc.id} style={{ background:'var(--elevated)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', overflow:'hidden' }}>
+              {editandoId === svc.id ? (
+                // Modo edición
+                <div style={{ padding:12, display:'flex', flexDirection:'column', gap:10 }}>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    {/* Emoji picker */}
+                    <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                      {EMOJIS.map(e => (
+                        <button key={e} onClick={() => setForm(f => ({...f, emoji:e}))} style={{ width:32, height:32, borderRadius:'var(--r-sm)', fontSize:'1.1rem', background: form.emoji===e ? 'var(--gold-bg)' : 'transparent', border: form.emoji===e ? '1px solid var(--gold-b)' : '1px solid transparent' }}>
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
+                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre</label>
+                      <input style={{ ...inp, height:36, width:'100%' }} value={form.nombre} onChange={e => setForm(f => ({...f, nombre:e.target.value}))} />
+                    </div>
+                    <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $</label>
+                      <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} value={form.precio} onChange={e => setForm(f => ({...f, precio:e.target.value}))} />
+                    </div>
+                    <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
+                      <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} value={form.duracion} onChange={e => setForm(f => ({...f, duracion:e.target.value}))} />
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button onClick={() => setEditandoId(null)} style={{ flex:1, height:34, background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', color:'var(--text2)', fontSize:'0.8rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
+                    <button onClick={() => handleGuardar(svc.id)} disabled={saving} style={{ flex:2, height:34, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}>
+                      {saving ? '...' : 'Guardar'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                // Modo vista
+                <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 14px' }}>
+                  <span style={{ fontSize:'1.3rem', flexShrink:0 }}>{svc.emoji||'✂️'}</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'0.875rem', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{svc.nombre}</div>
+                    <div style={{ fontSize:'0.7rem', color:'var(--muted)', marginTop:1 }}>{svc.duracion} min</div>
+                  </div>
+                  <span style={{ fontFamily:'var(--font-m)', fontSize:'0.9rem', color:'var(--gold)', fontWeight:500, flexShrink:0 }}>${svc.precio}</span>
+                  <button onClick={() => abrirEditar(svc)} style={{ width:28, height:28, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                    onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                  >✏️</button>
+                  <button onClick={() => handleEliminar(svc.id, svc.nombre)} style={{ width:28, height:28, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                    onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                  >🗑</button>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* Formulario nuevo servicio */}
+          {agregando ? (
+            <div style={{ padding:12, background:'var(--elevated)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', display:'flex', flexDirection:'column', gap:10 }}>
+              <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                {EMOJIS.map(e => (
+                  <button key={e} onClick={() => setNuevoForm(f => ({...f, emoji:e}))} style={{ width:32, height:32, borderRadius:'var(--r-sm)', fontSize:'1.1rem', background: nuevoForm.emoji===e ? 'var(--gold-bg)' : 'transparent', border: nuevoForm.emoji===e ? '1px solid var(--gold-b)' : '1px solid transparent' }}>
+                    {e}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
+                  <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre *</label>
+                  <input style={{ ...inp, height:36, width:'100%' }} placeholder="Ej: Corte de cabello" value={nuevoForm.nombre} onChange={e => setNuevoForm(f => ({...f, nombre:e.target.value}))} />
+                </div>
+                <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                  <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $ *</label>
+                  <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} placeholder="100" value={nuevoForm.precio} onChange={e => setNuevoForm(f => ({...f, precio:e.target.value}))} />
+                </div>
+                <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                  <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
+                  <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} placeholder="30" value={nuevoForm.duracion} onChange={e => setNuevoForm(f => ({...f, duracion:e.target.value}))} />
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => setAgregando(false)} style={{ flex:1, height:34, background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', color:'var(--text2)', fontSize:'0.8rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
+                <button onClick={handleAgregar} disabled={saving} style={{ flex:2, height:34, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}>
+                  {saving ? '...' : '+ Agregar'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setAgregando(true)} style={{ height:38, background:'var(--gold-bg)', color:'var(--gold)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)', transition:'all 150ms' }}
+              onMouseEnter={e => { e.currentTarget.style.background='var(--gold)'; e.currentTarget.style.color='#000'; e.currentTarget.style.borderStyle='solid'; }}
+              onMouseLeave={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; e.currentTarget.style.borderStyle='dashed'; }}
+            >
+              + Agregar servicio
+            </button>
+          )}
+        </div>
+      ))}
+
+      <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 4px', fontSize:'0.7rem', color:'var(--muted)' }}>
+        <span>Barbería Zaira</span>
+        <span style={{ fontFamily:'var(--font-m)' }}>BarberBot v2.0</span>
+      </div>
+    </div>
+  );
 }

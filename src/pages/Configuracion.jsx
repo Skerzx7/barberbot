@@ -1,71 +1,72 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { crearServicio, actualizarServicio, eliminarServicio } from '../services/firestoreService';
 
-const EMOJIS = ['✂️','🪒','💈','⚡','✨','👦','💅','🌸','💎','🌿','🎀','🔥','🪄','🩷','💜','⭐'];
+const EMOJIS = ['✂️','🪒','💈','⚡','✨','👦','💇','🧴','💆','🎨'];
 
-function ServiceRow({ svc, onChange, onDelete }) {
-  return (
-    <div style={{ display:'flex', alignItems:'center', gap:8, padding:12, background:'var(--elevated)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', flexWrap:'wrap' }}>
-      {/* Emoji selector */}
-      <select
-        style={{ width:52, height:34, background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-sm)', padding:'0 4px', color:'var(--text)', fontSize:'1rem', cursor:'pointer', textAlign:'center' }}
-        value={svc.emoji}
-        onChange={e => onChange(svc.id, 'emoji', e.target.value)}
-      >
-        {EMOJIS.map(em => <option key={em} value={em}>{em}</option>)}
-      </select>
+export default function Configuracion() {
+  const { showToast, servicios, guardarServicio, eliminarServicio } = useApp();
 
-      {/* Nombre */}
-      <input
-        style={{ flex:1, minWidth:120, height:34, background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-sm)', padding:'0 10px', color:'var(--text)', fontSize:'0.82rem', fontFamily:'var(--font-b)' }}
-        value={svc.nombre}
-        onChange={e => onChange(svc.id, 'nombre', e.target.value)}
-        placeholder="Nombre del servicio"
-      />
+  const [editandoId, setEditandoId] = useState(null);
+  const [form,       setForm]       = useState({});
+  const [saving,     setSaving]     = useState(false);
+  const [agregando,  setAgregando]  = useState(false);
+  const [nuevoForm,  setNuevoForm]  = useState({ nombre:'', precio:'', duracion:'30', emoji:'✂️' });
 
-      {/* Precio */}
-      <div style={{ display:'flex', alignItems:'center', gap:3 }}>
-        <span style={{ fontSize:'0.75rem', color:'var(--muted)' }}>$</span>
-        <input
-          type="number"
-          style={{ width:68, height:34, background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-sm)', padding:'0 8px', color:'var(--text)', fontSize:'0.82rem', fontFamily:'var(--font-m)', textAlign:'right' }}
-          value={svc.precio}
-          onChange={e => onChange(svc.id, 'precio', e.target.value)}
-        />
-      </div>
+  const abrirEditar = (svc) => {
+    setEditandoId(svc.id);
+    setForm({ nombre: svc.nombre, precio: String(svc.precio), duracion: String(svc.duracion||30), emoji: svc.emoji||'✂️' });
+  };
 
-      {/* Duración */}
-      <div style={{ display:'flex', alignItems:'center', gap:3 }}>
-        <span style={{ fontSize:'0.75rem', color:'var(--muted)' }}>min</span>
-        <input
-          type="number"
-          style={{ width:54, height:34, background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-sm)', padding:'0 8px', color:'var(--text)', fontSize:'0.82rem', fontFamily:'var(--font-m)', textAlign:'right' }}
-          value={svc.duracion}
-          onChange={e => onChange(svc.id, 'duracion', e.target.value)}
-        />
-      </div>
+  const handleGuardar = async (id) => {
+    // FIX: validar precio antes de guardar
+    const precio = Number(form.precio);
+    if (!form.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
+    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser un número mayor a 0', 'error'); return; }
+    setSaving(true);
+    try {
+      await guardarServicio(id, { ...form, precio });
+      setEditandoId(null);
+      showToast('Servicio guardado ✓', 'success');
+    } catch(err) {
+      showToast(err.message || 'Error al guardar', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
 
-      {/* Eliminar */}
-      <button
-        onMouseDown={e => e.preventDefault()}
-        onClick={() => onDelete(svc.id, svc.isNew)}
-        style={{ width:30, height:30, borderRadius:'var(--r-sm)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--muted)', fontSize:'0.85rem', flexShrink:0 }}
-        onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
-        onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
-      >🗑</button>
-    </div>
-  );
-}
+  const handleEliminar = async (id, nombre) => {
+    if (!window.confirm(`¿Eliminar "${nombre}"?`)) return;
+    try {
+      await eliminarServicio(id);
+      showToast('Servicio eliminado', 'info');
+    } catch(err) {
+      showToast('Error al eliminar', 'error');
+    }
+  };
 
-const inp = {
-  width:'100%', height:42, background:'var(--elevated)',
-  border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)',
-  padding:'0 14px', color:'var(--text)', fontSize:'0.875rem',
-};
+  const handleAgregar = async () => {
+    const precio = Number(nuevoForm.precio);
+    if (!nuevoForm.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
+    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser un número mayor a 0', 'error'); return; }
+    setSaving(true);
+    try {
+      await guardarServicio(null, { ...nuevoForm, precio });
+      setAgregando(false);
+      setNuevoForm({ nombre:'', precio:'', duracion:'30', emoji:'✂️' });
+      showToast('Servicio agregado ✓', 'success');
+    } catch(err) {
+      showToast(err.message || 'Error al agregar', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
 
-function Section({ title, emoji, children }) {
-  return (
+  const inp = {
+    background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)',
+    padding:'0 12px', color:'var(--text)', fontSize:'0.875rem', fontFamily:'var(--font-b)',
+  };
+
+  const section = (title, emoji, children) => (
     <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-xl)', padding:20, display:'flex', flexDirection:'column', gap:16 }}>
       <div style={{ display:'flex', alignItems:'center', gap:8 }}>
         <span>{emoji}</span>
@@ -74,153 +75,119 @@ function Section({ title, emoji, children }) {
       {children}
     </div>
   );
-}
-
-export default function Configuracion() {
-  const { showToast, servicios } = useApp();
-  const [localServicios, setLocalServicios] = useState([]);
-  const [nombreNegocio, setNombre]          = useState('Barbería Zaira');
-  const [recordMin, setRecordMin]           = useState(60);
-  const [saving, setSaving]                 = useState(false);
-
-  // Sincronizar con Firestore cuando llegan los servicios
-  useEffect(() => {
-    if (servicios.length > 0) {
-      setLocalServicios(servicios.map(s => ({ ...s })));
-    }
-  }, [servicios]);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const promises = localServicios.map(svc => {
-        if (svc.isNew) {
-          return crearServicio({
-            nombre:   svc.nombre,
-            precio:   Number(svc.precio)   || 0,
-            duracion: Number(svc.duracion) || 30,
-            emoji:    svc.emoji || '✂️',
-            activo:   true,
-          });
-        } else {
-          return actualizarServicio(svc.id, {
-            nombre:   svc.nombre,
-            precio:   Number(svc.precio)   || 0,
-            duracion: Number(svc.duracion) || 30,
-            emoji:    svc.emoji || '✂️',
-          });
-        }
-      });
-      await Promise.all(promises);
-      showToast('Configuración guardada ✓', 'success');
-    } catch (err) {
-      console.error('Error al guardar:', err);
-      showToast('Error al guardar. Intenta de nuevo.', 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleChange = useCallback((id, key, val) => {
-    setLocalServicios(prev => prev.map(s => s.id === id ? { ...s, [key]: val } : s));
-  }, []);
-
-  const handleDelete = useCallback(async (id, isNew) => {
-    if (!isNew) {
-      try {
-        await eliminarServicio(id);
-      } catch (err) {
-        console.error('Error al eliminar:', err);
-      }
-    }
-    setLocalServicios(prev => prev.filter(s => s.id !== id));
-    showToast('Servicio eliminado', 'info');
-  }, []);
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:20, animation:'fadeIn .3s var(--ease) both', maxWidth:640 }}>
 
-      <Section title="Tu negocio" emoji="💅">
-        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-          <label style={{ fontSize:'0.75rem', fontWeight:500, color:'var(--text2)' }}>Nombre de la barbería</label>
-          <input style={inp} value={nombreNegocio} onChange={e => setNombre(e.target.value)} placeholder="Nombre de tu negocio" />
-        </div>
-      </Section>
-
-      <Section title="Catálogo de servicios" emoji="✂️">
+      {section('Catálogo de servicios', '💈', (
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-          {localServicios.length === 0 && (
-            <p style={{ fontSize:'0.8rem', color:'var(--muted)', textAlign:'center', padding:12 }}>
-              Cargando servicios...
-            </p>
+          {servicios.length === 0 && (
+            <p style={{ fontSize:'0.8rem', color:'var(--muted)', textAlign:'center', padding:12 }}>Sin servicios aún. Agrega el primero.</p>
           )}
-          {localServicios.map(svc => (
-            <ServiceRow key={svc.id} svc={svc} onChange={handleChange} onDelete={handleDelete} />
+
+          {servicios.map(svc => (
+            <div key={svc.id} style={{ background:'var(--elevated)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', overflow:'hidden' }}>
+              {editandoId === svc.id ? (
+                // Modo edición
+                <div style={{ padding:12, display:'flex', flexDirection:'column', gap:10 }}>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    {/* Emoji picker */}
+                    <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                      {EMOJIS.map(e => (
+                        <button key={e} onClick={() => setForm(f => ({...f, emoji:e}))} style={{ width:32, height:32, borderRadius:'var(--r-sm)', fontSize:'1.1rem', background: form.emoji===e ? 'var(--gold-bg)' : 'transparent', border: form.emoji===e ? '1px solid var(--gold-b)' : '1px solid transparent' }}>
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                    <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
+                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre</label>
+                      <input style={{ ...inp, height:36, width:'100%' }} value={form.nombre} onChange={e => setForm(f => ({...f, nombre:e.target.value}))} />
+                    </div>
+                    <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $</label>
+                      <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} value={form.precio} onChange={e => setForm(f => ({...f, precio:e.target.value}))} />
+                    </div>
+                    <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
+                      <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} value={form.duracion} onChange={e => setForm(f => ({...f, duracion:e.target.value}))} />
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button onClick={() => setEditandoId(null)} style={{ flex:1, height:34, background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', color:'var(--text2)', fontSize:'0.8rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
+                    <button onClick={() => handleGuardar(svc.id)} disabled={saving} style={{ flex:2, height:34, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}>
+                      {saving ? '...' : 'Guardar'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                // Modo vista
+                <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 14px' }}>
+                  <span style={{ fontSize:'1.3rem', flexShrink:0 }}>{svc.emoji||'✂️'}</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'0.875rem', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{svc.nombre}</div>
+                    <div style={{ fontSize:'0.7rem', color:'var(--muted)', marginTop:1 }}>{svc.duracion} min</div>
+                  </div>
+                  <span style={{ fontFamily:'var(--font-m)', fontSize:'0.9rem', color:'var(--gold)', fontWeight:500, flexShrink:0 }}>${svc.precio}</span>
+                  <button onClick={() => abrirEditar(svc)} style={{ width:28, height:28, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                    onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                  >✏️</button>
+                  <button onClick={() => handleEliminar(svc.id, svc.nombre)} style={{ width:28, height:28, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                    onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                  >🗑</button>
+                </div>
+              )}
+            </div>
           ))}
-          <button
-            onClick={() => setLocalServicios(p => [...p, {
-              id:      `new_${Date.now()}`,
-              nombre:  'Nuevo servicio',
-              precio:  100,
-              duracion:30,
-              emoji:   '✨',
-              isNew:   true,
-            }])}
-            style={{ height:38, background:'var(--gold-bg)', color:'var(--gold)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}
-          >
-            + Agregar servicio
-          </button>
-        </div>
-      </Section>
 
-      <Section title="Sistema de puntos" emoji="⭐">
-        <div style={{ display:'flex', flexDirection:'column', gap:10, fontSize:'0.82rem', color:'var(--text2)', lineHeight:1.6 }}>
-          <p>Cada clienta acumula puntos automáticamente por cada cita completada:</p>
-          <div style={{ background:'var(--elevated)', borderRadius:'var(--r-md)', padding:14, display:'flex', flexDirection:'column', gap:8 }}>
-            {[
-              ['🥉','Bronze','0 – 199 pts','var(--text2)'],
-              ['🥈','Silver','200 – 499 pts','var(--blue)'],
-              ['⭐','Gold','500+ pts','var(--gold)'],
-            ].map(([em, nivel, rango, color]) => (
-              <div key={nivel} style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                <span>{em} <strong style={{ color }}>{nivel}</strong></span>
-                <span style={{ fontFamily:'var(--font-m)', fontSize:'0.75rem', color:'var(--muted)' }}>{rango}</span>
+          {/* Formulario nuevo servicio */}
+          {agregando ? (
+            <div style={{ padding:12, background:'var(--elevated)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', display:'flex', flexDirection:'column', gap:10 }}>
+              <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
+                {EMOJIS.map(e => (
+                  <button key={e} onClick={() => setNuevoForm(f => ({...f, emoji:e}))} style={{ width:32, height:32, borderRadius:'var(--r-sm)', fontSize:'1.1rem', background: nuevoForm.emoji===e ? 'var(--gold-bg)' : 'transparent', border: nuevoForm.emoji===e ? '1px solid var(--gold-b)' : '1px solid transparent' }}>
+                    {e}
+                  </button>
+                ))}
               </div>
-            ))}
-          </div>
-          <p style={{ fontSize:'0.72rem', color:'var(--muted)' }}>
-            Cada cita completada suma <strong style={{ color:'var(--text)' }}>10 puntos</strong>.
-          </p>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
+                  <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre *</label>
+                  <input style={{ ...inp, height:36, width:'100%' }} placeholder="Ej: Corte de cabello" value={nuevoForm.nombre} onChange={e => setNuevoForm(f => ({...f, nombre:e.target.value}))} />
+                </div>
+                <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                  <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $ *</label>
+                  <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} placeholder="100" value={nuevoForm.precio} onChange={e => setNuevoForm(f => ({...f, precio:e.target.value}))} />
+                </div>
+                <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                  <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
+                  <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} placeholder="30" value={nuevoForm.duracion} onChange={e => setNuevoForm(f => ({...f, duracion:e.target.value}))} />
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => setAgregando(false)} style={{ flex:1, height:34, background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', color:'var(--text2)', fontSize:'0.8rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
+                <button onClick={handleAgregar} disabled={saving} style={{ flex:2, height:34, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}>
+                  {saving ? '...' : '+ Agregar'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setAgregando(true)} style={{ height:38, background:'var(--gold-bg)', color:'var(--gold)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)', transition:'all 150ms' }}
+              onMouseEnter={e => { e.currentTarget.style.background='var(--gold)'; e.currentTarget.style.color='#000'; e.currentTarget.style.borderStyle='solid'; }}
+              onMouseLeave={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; e.currentTarget.style.borderStyle='dashed'; }}
+            >
+              + Agregar servicio
+            </button>
+          )}
         </div>
-      </Section>
-
-      <Section title="Recordatorios automáticos" emoji="🔔">
-        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-          <label style={{ fontSize:'0.75rem', fontWeight:500, color:'var(--text2)' }}>Enviar recordatorio antes de la cita</label>
-          <select style={{ ...inp, cursor:'pointer', appearance:'none' }} value={recordMin} onChange={e => setRecordMin(Number(e.target.value))}>
-            <option value={30}>30 minutos antes</option>
-            <option value={60}>1 hora antes</option>
-            <option value={120}>2 horas antes</option>
-            <option value={1440}>1 día antes</option>
-            <option value={2880}>2 días antes</option>
-          </select>
-        </div>
-      </Section>
-
-      <button
-        onClick={handleSave}
-        disabled={saving}
-        style={{ height:48, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.9rem', fontWeight:600, fontFamily:'var(--font-b)', display:'flex', alignItems:'center', justifyContent:'center', gap:8, opacity:saving?0.6:1, transition:'all 200ms' }}
-      >
-        {saving
-          ? <span style={{ width:18, height:18, border:'2px solid rgba(0,0,0,.3)', borderTopColor:'#000', borderRadius:'50%', animation:'spin .7s linear infinite' }}/>
-          : '💾 Guardar configuración'
-        }
-      </button>
+      ))}
 
       <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 4px', fontSize:'0.7rem', color:'var(--muted)' }}>
-        <span>Barbería Zaira — {new Date().getFullYear()}</span>
-        <span style={{ fontFamily:'var(--font-m)' }}>v1.0.0</span>
+        <span>Barbería Zaira</span>
+        <span style={{ fontFamily:'var(--font-m)' }}>BarberBot v2.0</span>
       </div>
     </div>
   );

@@ -23,10 +23,9 @@ function StatCard({ emoji, label, value, sub, accent }) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { citas, clientes, citasHoy, ingresosMes, citasCompletadasMes, completarCita, showToast } = useApp();
+  const { citas, clientes, citasHoy, ingresosMes, citasCompletadasMes, completarCita, showToast, nowMX } = useApp();
 
-  const hoy = new Date();
-
+  const hoy = nowMX();
   const citasActivasHoy = citasHoy.filter(a => a.estado !== 'cancelled');
 
   const greeting = (() => {
@@ -41,13 +40,12 @@ export default function Dashboard() {
 
   const handleComplete = async (id, nombre) => {
     await completarCita(id);
-    showToast(`Cita de ${nombre?.split(' ')[0]} completada ✓`, 'success');
+    showToast(`Cita de ${nombre?.split(' ')[0]} completada ✓ +10 pts`, 'success');
   };
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:28, animation:'fadeIn .3s var(--ease) both' }}>
 
-      {/* Saludo */}
       <div>
         <h2 style={{ fontFamily:'var(--font-d)', fontSize:'clamp(1.4rem,4vw,2rem)', fontWeight:400, marginBottom:4 }}>
           {greeting} <span style={{ color:'var(--gold)' }}>✦</span>
@@ -57,15 +55,13 @@ export default function Dashboard() {
         </p>
       </div>
 
-      {/* Stats */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:12 }}>
-        <StatCard emoji="💅" label="Citas hoy"    value={citasActivasHoy.length}    sub="agendadas para hoy"  accent="var(--gold)" />
-        <StatCard emoji="📈" label="Este mes"      value={citasCompletadasMes}        sub="citas completadas"   accent="var(--green)" />
-        <StatCard emoji="💰" label="Ingresos mes"  value={`$${ingresosMes.toLocaleString()}`} sub="MXN este mes" accent="var(--blue)" />
-        <StatCard emoji="👥" label="Clientes"      value={clientes.length}            sub="registradas"         accent="#a064ff" />
+        <StatCard emoji="💅" label="Citas hoy"    value={citasActivasHoy.length}            sub="agendadas"         accent="var(--gold)"  />
+        <StatCard emoji="📈" label="Este mes"      value={citasCompletadasMes}                sub="completadas"       accent="var(--green)" />
+        <StatCard emoji="💰" label="Ingresos mes"  value={`$${ingresosMes.toLocaleString()}`} sub="MXN"               accent="var(--blue)"  />
+        <StatCard emoji="👥" label="Clientas"      value={clientes.length}                    sub="registradas"       accent="#a064ff"      />
       </div>
 
-      {/* Citas de hoy */}
       <div>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
           <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1.1rem', fontWeight:500 }}>Citas de hoy</h3>
@@ -83,7 +79,7 @@ export default function Dashboard() {
               </button>
             </div>
           ) : citasActivasHoy
-              .sort((a, b) => (a.hora || '').localeCompare(b.hora || ''))
+              .sort((a, b) => (a.hora||'').localeCompare(b.hora||''))
               .map(a => (
             <div key={a.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'13px 16px', background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', transition:'all 150ms', cursor:'pointer' }}
               onClick={() => navigate(`/clientes/${a.clientId}`)}
@@ -107,13 +103,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Acciones rápidas */}
       <div>
         <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1.1rem', fontWeight:500, marginBottom:14 }}>Acciones rápidas</h3>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10 }}>
           {[
             { label:'Nueva cita',    emoji:'📅', to:'/agenda/nueva' },
-            { label:'Nueva cliente', emoji:'👤', to:'/clientes' },
+            { label:'Nueva clienta', emoji:'👤', to:'/clientes' },
             { label:'Mensajes',      emoji:'💬', to:'/mensajes' },
           ].map(({ label, emoji, to }) => (
             <button key={to} onClick={() => navigate(to)} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'18px 12px', background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-lg)', color:'var(--text2)', fontSize:'0.75rem', fontWeight:500, fontFamily:'var(--font-b)', transition:'all 150ms' }}

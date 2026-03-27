@@ -2,22 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { listenMensajes, enviarMensaje } from '../services/firestoreService';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, getDocs, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { to12h } from '../mock/data';
-
-function generarRespuestaLocal(texto, servicios) {
-  const t = texto.toLowerCase();
-  if (t.includes('hora') || t.includes('horario')) return `De lunes a sábado de 9am a 8pm 💅`;
-  if (t.includes('precio') || t.includes('cuánto') || t.includes('cuesta')) {
-    const lista = servicios.slice(0,4).map(s => `${s.emoji} ${s.nombre}: $${s.precio}`).join('\n');
-    return `Estos son algunos precios:\n${lista}`;
-  }
-  if (t.includes('donde') || t.includes('dónde') || t.includes('ubicacion')) return `Por el momento solo atendemos con cita previa 😊`;
-  if (t.includes('cancelar') || t.includes('no puedo')) return `Ay no, qué lástima 😢 ¿La cambiamos para otro día?`;
-  if (t.includes('gracias') || t.includes('ok')) return `¡Con gusto! Cualquier cosa aquí estamos 😊`;
-  return `¿En qué te puedo ayudar? 😊`;
-}
 
 function Bubble({ msg }) {
   const isRight = msg.de === 'owner' || msg.de === 'bot';
@@ -27,14 +14,14 @@ function Bubble({ msg }) {
   const canal = msg.canal === 'whatsapp' ? '📱' : '';
   return (
     <div style={{ display:'flex', flexDirection:'column', maxWidth:'78%', gap:3, alignSelf: isRight?'flex-end':'flex-start', alignItems: isRight?'flex-end':'flex-start' }}>
-      {msg.de === 'bot' && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--green)', letterSpacing:'0.05em', padding:'0 4px' }}>🤖 bot {canal}</span>}
-      {msg.de === 'owner' && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--gold)', letterSpacing:'0.05em', padding:'0 4px' }}>✏️ tú {canal}</span>}
+      {msg.de === 'bot'   && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--green)', letterSpacing:'0.05em', padding:'0 4px' }}>🤖 bot {canal}</span>}
+      {msg.de === 'owner' && <span style={{ fontSize:'0.6rem', fontWeight:600, color:'var(--gold)',  letterSpacing:'0.05em', padding:'0 4px' }}>✏️ tú {canal}</span>}
       <div style={{
         padding:'10px 14px', borderRadius:'var(--r-lg)',
         borderBottomRightRadius: isRight ? 4 : 'var(--r-lg)',
         borderBottomLeftRadius:  isRight ? 'var(--r-lg)' : 4,
         background: msg.de==='owner' ? 'var(--gold-bg)' : msg.de==='bot' ? 'rgba(82,183,136,.08)' : 'var(--elevated)',
-        border: msg.de==='owner' ? '1px solid var(--gold-b)' : msg.de==='bot' ? '1px solid rgba(82,183,136,.2)' : '1px solid var(--b-subtle)',
+        border:     msg.de==='owner' ? '1px solid var(--gold-b)' : msg.de==='bot' ? '1px solid rgba(82,183,136,.2)' : '1px solid var(--b-subtle)',
       }}>
         <p style={{ fontSize:'0.875rem', lineHeight:1.5, color:'var(--text)', whiteSpace:'pre-wrap', margin:0 }}>{msg.texto}</p>
         <span style={{ fontSize:'0.6rem', color:'var(--muted)', marginTop:4, display:'block' }}>{ts}</span>
@@ -45,15 +32,16 @@ function Bubble({ msg }) {
 
 export default function Mensajes() {
   const { id: paramId } = useParams();
-  const navigate = useNavigate();
-  const { clientes, citas, servicios } = useApp();
+  const navigate        = useNavigate();
+  const { clientes, citas, servicios, showToast } = useApp();
 
-  const [selectedId, setSelectedId]   = useState(paramId || null);
-  const [messages, setMessages]       = useState([]);
-  const [input, setInput]             = useState('');
-  const [botTyping, setBotTyping]     = useState(false);
-  const [botEnabled, setBotEnabled]   = useState(true);
-  const [loadingBot, setLoadingBot]   = useState(false);
+  const [selectedId,  setSelectedId]  = useState(paramId || null);
+  const [messages,    setMessages]    = useState([]);
+  const [input,       setInput]       = useState('');
+  const [botTyping,   setBotTyping]   = useState(false);
+  const [botEnabled,  setBotEnabled]  = useState(true);
+  const [loadingBot,  setLoadingBot]  = useState(false);
+  const [loadingIA,   setLoadingIA]   = useState(false);
   const endRef   = useRef(null);
   const inputRef = useRef(null);
 
@@ -71,23 +59,17 @@ export default function Mensajes() {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [messages, botTyping]);
   useEffect(() => { if (paramId) setSelectedId(paramId); }, [paramId]);
 
-  // Escuchar mensajes en tiempo real
   useEffect(() => {
     if (!selectedId) return;
     const unsub = listenMensajes(selectedId, setMessages);
     return unsub;
   }, [selectedId]);
 
-  // Cargar estado del bot cuando cambia el cliente
   useEffect(() => {
     if (!selectedId) return;
     setLoadingBot(true);
     getDoc(doc(db, 'config_bot', selectedId)).then(snap => {
-      if (snap.exists()) {
-        setBotEnabled(snap.data().activo !== false);
-      } else {
-        setBotEnabled(true);
-      }
+      setBotEnabled(snap.exists() ? snap.data().activo !== false : true);
       setLoadingBot(false);
     }).catch(() => setLoadingBot(false));
   }, [selectedId]);
@@ -99,16 +81,12 @@ export default function Mensajes() {
     await setDoc(doc(db, 'config_bot', selectedId), { activo: nuevoEstado }, { merge: true });
   };
 
-    const handleSend = async () => {
+  const handleSend = async () => {
     const texto = input.trim();
     if (!texto || !selectedId) return;
     setInput('');
     inputRef.current?.focus();
-
-    // Guardar en Firestore
     await enviarMensaje(selectedId, { de:'owner', texto, canal: botEnabled ? 'app' : 'whatsapp' });
-
-    // Si bot está OFF y cliente tiene teléfono, mandar por WhatsApp
     if (!botEnabled && cliente?.telefono) {
       try {
         await fetch('/.netlify/functions/send-whatsapp', {
@@ -116,21 +94,65 @@ export default function Mensajes() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ telefono: cliente.telefono, mensaje: texto }),
         });
-      } catch (err) {
-        console.error('Error enviando WhatsApp:', err);
-      }
+      } catch(err) { console.error('Error enviando WhatsApp:', err); }
     }
   };
 
+  // FIX: Respuesta IA usa Claude con el último mensaje real del cliente
   const handleBotReply = async () => {
-    if (!selectedId || !cliente) return;
+    if (!selectedId || !cliente || loadingIA) return;
+    const lastClientMsg = [...messages].reverse().find(m => m.de === 'client');
+    if (!lastClientMsg) {
+      showToast('No hay mensajes del cliente para responder', 'warning');
+      return;
+    }
+    setLoadingIA(true);
     setBotTyping(true);
-    const last = [...messages].reverse().find(m => m.de === 'client');
-    const respuesta = generarRespuestaLocal(last?.texto || 'hola', servicios);
-    setTimeout(async () => {
-      await enviarMensaje(selectedId, { de:'bot', texto: respuesta, canal:'app' });
+    try {
+      const res = await fetch('/.netlify/functions/ia-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clienteId:  selectedId,
+          clienteNombre: cliente.nombre,
+          mensaje:    lastClientMsg.texto,
+          historial:  messages.slice(-10).map(m => ({ de: m.de, texto: m.texto })),
+          servicios:  servicios.map(s => ({ nombre: s.nombre, precio: s.precio, emoji: s.emoji })),
+        }),
+      });
+      const data = await res.json();
+      if (data.respuesta) {
+        await enviarMensaje(selectedId, { de:'bot', texto: data.respuesta, canal:'app' });
+        // Si bot OFF, mandar también por WhatsApp
+        if (!botEnabled && cliente?.telefono) {
+          await fetch('/.netlify/functions/send-whatsapp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ telefono: cliente.telefono, mensaje: data.respuesta }),
+          });
+        }
+      }
+    } catch(err) {
+      console.error('Error IA reply:', err);
+      showToast('Error al generar respuesta', 'error');
+    } finally {
       setBotTyping(false);
-    }, 800);
+      setLoadingIA(false);
+    }
+  };
+
+  // FIX: Borrar conversación usando imports estáticos (no dinámicos)
+  const handleBorrarConversacion = async () => {
+    if (!window.confirm('¿Borrar toda la conversación? Esta acción no se puede deshacer.')) return;
+    try {
+      const snap = await getDocs(collection(db, 'clientes', selectedId, 'mensajes'));
+      await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', d.id))));
+      setMessages([]);
+      showToast('Conversación borrada', 'info');
+    } catch(e) {
+      console.error(e);
+      showToast('Error al borrar la conversación', 'error');
+    }
   };
 
   const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
@@ -139,6 +161,7 @@ export default function Mensajes() {
   return (
     <div style={{ display:'flex', height:`calc(100dvh - var(--topbar) - ${isMobile ? 'var(--botnav)' : '0px'})`, margin: isMobile ? '-20px -16px' : '-28px -32px', overflow:'hidden' }}>
 
+      {/* Lista de clientes */}
       {(!isMobile || !selectedId) && (
         <aside style={{ width: isMobile ? '100%' : 280, borderRight:'1px solid var(--b-subtle)', display:'flex', flexDirection:'column', background:'var(--surface)', flexShrink:0 }}>
           <div style={{ padding:'16px 16px 12px', borderBottom:'1px solid var(--b-subtle)', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
@@ -162,6 +185,7 @@ export default function Mensajes() {
         </aside>
       )}
 
+      {/* Chat */}
       {(!isMobile || selectedId) && (
         <section style={{ flex:1, display:'flex', flexDirection:'column', minWidth:0, background:'var(--bg)' }}>
           {!selectedId ? (
@@ -172,9 +196,9 @@ export default function Mensajes() {
           ) : (
             <>
               {/* Header */}
-              <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 16px', borderBottom:'1px solid var(--b-subtle)', background:'var(--surface)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 16px', borderBottom:'1px solid var(--b-subtle)', background:'var(--surface)' }}>
                 {isMobile && (
-                  <button onClick={() => { setSelectedId(null); navigate('/mensajes'); }} style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-subtle)', color:'var(--text2)', fontSize:'0.9rem' }}>←</button>
+                  <button onClick={() => { setSelectedId(null); navigate('/mensajes'); }} style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-subtle)', color:'var(--text2)', fontSize:'0.9rem', flexShrink:0 }}>←</button>
                 )}
                 <div style={{ width:36, height:36, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-soft)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--gold)', fontFamily:'var(--font-d)', flexShrink:0 }}>
                   {(cliente?.nombre||'?')[0]}
@@ -185,10 +209,10 @@ export default function Mensajes() {
                   {cliente?.telefono && <div style={{ fontSize:'0.7rem', color:'var(--muted)' }}>📱 {cliente.telefono}</div>}
                 </div>
 
-                {/* Toggle Bot */}
                 {/* Editar cliente */}
                 <button
                   onClick={() => navigate(`/clientes/${selectedId}`)}
+                  title="Editar cliente"
                   style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-soft)', color:'var(--muted)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
                   onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; e.currentTarget.style.borderColor='var(--gold-b)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
@@ -196,28 +220,24 @@ export default function Mensajes() {
 
                 {/* Borrar conversación */}
                 <button
-                  onClick={async () => {
-                    if (!window.confirm('¿Borrar toda la conversación?')) return;
-                    try {
-                      const { collection, getDocs, deleteDoc, doc } = await import('firebase/firestore');
-                      const { db } = await import('../firebase');
-                      const snap = await getDocs(collection(db, 'clientes', selectedId, 'mensajes'));
-                      await Promise.all(snap.docs.map(d => deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', d.id))));
-                      showToast('Conversación borrada', 'info');
-                    } catch(e) { showToast('Error al borrar', 'error'); }
-                  }}
+                  onClick={handleBorrarConversacion}
+                  title="Borrar conversación"
                   style={{ width:32, height:32, borderRadius:'var(--r-md)', background:'var(--elevated)', border:'1px solid var(--b-soft)', color:'var(--muted)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
                   onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; e.currentTarget.style.borderColor='var(--red-b)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.color='var(--muted)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
                 >🗑</button>
 
                 {/* Toggle Bot */}
-                <button onClick={toggleBot} disabled={loadingBot} style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: botEnabled ? 'var(--green-bg)' : 'var(--elevated)', color: botEnabled ? 'var(--green)' : 'var(--muted)', border: botEnabled ? '1px solid var(--green-b)' : '1px solid var(--b-soft)', opacity: loadingBot ? 0.5 : 1, transition:'all 200ms' }}>
+                <button
+                  onClick={toggleBot}
+                  disabled={loadingBot}
+                  style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: botEnabled ? 'var(--green-bg)' : 'var(--elevated)', color: botEnabled ? 'var(--green)' : 'var(--muted)', border: botEnabled ? '1px solid var(--green-b)' : '1px solid var(--b-soft)', opacity: loadingBot ? 0.5 : 1, transition:'all 200ms', flexShrink:0 }}
+                >
                   🤖 {botEnabled ? 'Bot ON' : 'Bot OFF'}
                 </button>
               </div>
 
-              {/* Info bot desactivado */}
+              {/* Banner modo manual */}
               {!botEnabled && (
                 <div style={{ padding:'8px 16px', background:'var(--gold-bg)', borderBottom:'1px solid var(--gold-b)', fontSize:'0.75rem', color:'var(--gold)', display:'flex', alignItems:'center', gap:6 }}>
                   ✏️ Modo manual — estás respondiendo como Zaira
@@ -228,10 +248,8 @@ export default function Mensajes() {
               <div style={{ flex:1, overflowY:'auto', padding:'20px 16px', display:'flex', flexDirection:'column', gap:8 }}>
                 {messages.length === 0 && (
                   <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, padding:20, color:'var(--muted)', fontSize:'0.8rem', textAlign:'center' }}>
-                    <p>Sin mensajes aún con <strong style={{ color:'var(--text2)' }}>{cliente?.nombre?.split(' ')[0]}</strong></p>
-                    {cliente?.telefono && (
-                      <p style={{ fontSize:'0.72rem' }}>Cuando esta clienta escriba al WhatsApp, los mensajes aparecerán aquí.</p>
-                    )}
+                    <p>Sin mensajes con <strong style={{ color:'var(--text2)' }}>{cliente?.nombre?.split(' ')[0]}</strong></p>
+                    {cliente?.telefono && <p style={{ fontSize:'0.72rem' }}>Cuando escriba al WhatsApp los mensajes aparecerán aquí.</p>}
                   </div>
                 )}
                 {messages.map(msg => <Bubble key={msg.id} msg={msg} />)}
@@ -248,13 +266,13 @@ export default function Mensajes() {
               {/* Input */}
               <div style={{ padding:'12px 16px', borderTop:'1px solid var(--b-subtle)', background:'var(--surface)', display:'flex', flexDirection:'column', gap:8 }}>
                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  {botEnabled && (
-                    <button
-                      onClick={handleBotReply}
-                      disabled={botTyping}
-                      style={{ display:'flex', alignItems:'center', gap:5, height:28, padding:'0 12px', background:'var(--green-bg)', color:'var(--green)', border:'1px solid var(--green-b)', borderRadius:'var(--r-full)', fontSize:'0.72rem', fontWeight:600, fontFamily:'var(--font-b)', opacity: botTyping ? 0.4 : 1 }}
-                    >⚡ Respuesta IA</button>
-                  )}
+                  <button
+                    onClick={handleBotReply}
+                    disabled={botTyping || loadingIA}
+                    style={{ display:'flex', alignItems:'center', gap:5, height:28, padding:'0 12px', background:'var(--green-bg)', color:'var(--green)', border:'1px solid var(--green-b)', borderRadius:'var(--r-full)', fontSize:'0.72rem', fontWeight:600, fontFamily:'var(--font-b)', opacity: (botTyping||loadingIA) ? 0.4 : 1, transition:'opacity 200ms' }}
+                  >
+                    {loadingIA ? '⏳ Generando...' : '⚡ Respuesta IA'}
+                  </button>
                   <span style={{ fontSize:'0.65rem', color:'var(--muted)', marginLeft:'auto' }}>
                     {botEnabled ? '🟢 Bot responde automático' : '✏️ Tú estás respondiendo'}
                   </span>

@@ -1,54 +1,31 @@
-import { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth } from '../firebase';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
-  listenClientes, listenCitas, listenServicios,
-  crearCliente, actualizarClienteFS, eliminarClienteFS,
-  crearCita, actualizarCita,
-  crearServicio, actualizarServicio, eliminarServicio,
-  sumarPuntosCliente,
-} from '../services/firestoreService';
+  collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc,
+  query, orderBy, limit, serverTimestamp, Timestamp,
+  where, writeBatch, getDocs,
+} from 'firebase/firestore';
+import { db } from '../firebase';
 
 const AppContext = createContext(null);
 
+// ── Timezone Mexico City ──────────────────────────────────────────
+export function nowMX() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+}
+
+export function fechaStrMX(date) {
+  const d  = date ? new Date(date) : new Date();
+  const mx = new Date(d.toLocaleString('en-US', { timeZone: 'America/Mexico_City' }));
+  return `${mx.getFullYear()}-${String(mx.getMonth()+1).padStart(2,'0')}-${String(mx.getDate()).padStart(2,'0')}`;
+}
+
 export function AppProvider({ children }) {
-  const [toast, setToast]             = useState(null);
-  const [citas, setCitas]             = useState([]);
-  const [clientes, setClientes]       = useState([]);
-  const [servicios, setServicios]     = useState([]);
+  const [toast,     setToast]     = useState(null);
+  const [clientes,  setClientes]  = useState([]);
+  const [citas,     setCitas]     = useState([]);
+  const [servicios, setServicios] = useState([]);
   const [loadingData, setLoadingData] = useState(true);
 
-  useEffect(() => {
-    let unsubClientes  = () => {};
-    let unsubCitas     = () => {};
-    let unsubServicios = () => {};
-
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        setLoadingData(false);
-        return;
-      }
-
-      let loadedCount = 0;
-      const checkLoaded = () => {
-        loadedCount++;
-        if (loadedCount >= 3) setLoadingData(false);
-      };
-
-      unsubClientes  = listenClientes(data  => { setClientes(data);  checkLoaded(); });
-      unsubCitas     = listenCitas(data      => { setCitas(data);     checkLoaded(); });
-      unsubServicios = listenServicios(data  => { setServicios(data); checkLoaded(); });
-    });
-
-    return () => {
-      unsubAuth();
-      unsubClientes();
-      unsubCitas();
-      unsubServicios();
-    };
-  }, []);
-
-  // ── Toast ────────────────────────────────────────────────────────
   const showToast = useCallback((message, type = 'success', duration = 3500) => {
     if (!message) { setToast(null); return; }
     const id = Date.now();
@@ -56,89 +33,184 @@ export function AppProvider({ children }) {
     setTimeout(() => setToast(t => t?.id === id ? null : t), duration);
   }, []);
 
-  // ── Citas ────────────────────────────────────────────────────────
-  const completarCita = useCallback(async (id) => {
-    await actualizarCita(id, { estado: 'completed' });
-    const cita = citas.find(c => c.id === id);
-    if (cita?.clientId) {
-      await sumarPuntosCliente(cita.clientId, 10);
-    }
-  }, [citas]);
+  // ── Listeners Firebase ────────────────────────────────────────
+  useEffect(() => {
+    let loaded = 0;
+    const done = () => { loaded++; if (loaded >= 3) setLoadingData(false); };
 
-  const cancelarCita = useCallback(async (id) => {
-    await actualizarCita(id, { estado: 'cancelled' });
-  }, []);
-
-  const agregarCita = useCallback(async (data) => {
-    await crearCita(data);
-  }, []);
-
-  // ── Clientes ─────────────────────────────────────────────────────
-  const agregarCliente = useCallback(async (data) => {
-    const ref = await crearCliente(data);
-    return { id: ref.id, ...data, visitas: 0, puntos: 0, creadoEn: new Date() };
-  }, []);
-
-  const actualizarCliente = useCallback(async (id, data) => {
-    await actualizarClienteFS(id, data);
-  }, []);
-
-  const eliminarCliente = useCallback(async (id) => {
-    await eliminarClienteFS(id);
-  }, []);
-
-  // ── Servicios ────────────────────────────────────────────────────
-  const actualizarServicios = useCallback(async (lista) => {
-    const promises = lista.map(svc =>
-      svc.isNew ? crearServicio(svc) : actualizarServicio(svc.id, svc)
+    const unsubClientes = onSnapshot(
+      query(collection(db, 'clientes'), orderBy('nombre')),
+      snap => {
+        setClientes(snap.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id, ...data,
+            creadoEn: data.creadoEn instanceof Timestamp
+              ? data.creadoEn.toDate()
+              : data.creadoEn ? new Date(data.creadoEn) : new Date(),
+          };
+        }));
+        done();
+      },
+      err => { console.error('clientes:', err); done(); }
     );
-    await Promise.all(promises);
+
+    const unsubCitas = onSnapshot(
+      query(collection(db, 'citas'), orderBy('fechaStr', 'desc'), limit(500)),
+      snap => {
+        setCitas(snap.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id, ...data,
+            fecha: data.fechaStr ? new Date(data.fechaStr + 'T12:00:00') : new Date(),
+          };
+        }));
+        done();
+      },
+      err => { console.error('citas:', err); done(); }
+    );
+
+    const unsubServicios = onSnapshot(
+      collection(db, 'servicios'),
+      snap => {
+        setServicios(
+          snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(s => s.nombre && Number(s.precio) > 0)
+            .sort((a, b) => (a.nombre||'').localeCompare(b.nombre||''))
+        );
+        done();
+      },
+      err => { console.error('servicios:', err); done(); }
+    );
+
+    return () => { unsubClientes(); unsubCitas(); unsubServicios(); };
   }, []);
 
-  const eliminarServicioCtx = useCallback(async (id) => {
-    await eliminarServicio(id);
-  }, []);
+  // ── Stats con timezone Mexico ─────────────────────────────────
+  const hoyStr = fechaStrMX();
 
-  // ── Stats ────────────────────────────────────────────────────────
-  const hoy = new Date();
+  const citasHoy = citas.filter(a => a.fechaStr === hoyStr);
 
-  const citasHoy = useMemo(() =>
-    citas.filter(a => {
-      const d = a.fecha instanceof Date ? a.fecha : new Date(a.fecha);
-      return d.toDateString() === hoy.toDateString();
-    }), [citas]
-  );
-
-  const ingresosMes = useMemo(() =>
-    citas
+  const ingresosMes = (() => {
+    const mx = nowMX();
+    return citas
       .filter(a => {
-        const d = a.fecha instanceof Date ? a.fecha : new Date(a.fecha);
-        return a.estado === 'completed' &&
-          d.getMonth() === hoy.getMonth() &&
-          d.getFullYear() === hoy.getFullYear();
+        if (a.estado !== 'completed' || !a.fechaStr) return false;
+        const d = new Date(a.fechaStr + 'T12:00:00');
+        return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
       })
-      .reduce((s, a) => s + (Number(a.precio) || 0), 0),
-    [citas]
-  );
+      .reduce((s, a) => s + (Number(a.precio) || 0), 0);
+  })();
 
-  const citasCompletadasMes = useMemo(() =>
-    citas.filter(a => {
-      const d = a.fecha instanceof Date ? a.fecha : new Date(a.fecha);
-      return a.estado === 'completed' &&
-        d.getMonth() === hoy.getMonth() &&
-        d.getFullYear() === hoy.getFullYear();
-    }).length,
-    [citas]
-  );
+  const citasCompletadasMes = (() => {
+    const mx = nowMX();
+    return citas.filter(a => {
+      if (a.estado !== 'completed' || !a.fechaStr) return false;
+      const d = new Date(a.fechaStr + 'T12:00:00');
+      return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
+    }).length;
+  })();
+
+  // ── CRUD Clientes ─────────────────────────────────────────────
+  const agregarCliente = async (data) => {
+    const ref = await addDoc(collection(db, 'clientes'), {
+      nombre:   data.nombre?.trim()   || '',
+      telefono: data.telefono?.trim() || '',
+      email:    data.email?.trim()    || '',
+      notas:    data.notas?.trim()    || '',
+      visitas: 0, puntos: 0,
+      creadoEn: serverTimestamp(),
+    });
+    return { id: ref.id, ...data };
+  };
+
+  const actualizarCliente = async (id, data) => {
+    await updateDoc(doc(db, 'clientes', id), {
+      nombre:   data.nombre?.trim()   || '',
+      telefono: data.telefono?.trim() || '',
+      email:    data.email?.trim()    || '',
+      notas:    data.notas?.trim()    || '',
+    });
+  };
+
+  const eliminarCliente = async (id) => {
+    await deleteDoc(doc(db, 'clientes', id));
+  };
+
+  // ── CRUD Citas ────────────────────────────────────────────────
+  const agregarCita = async (data) => {
+    // FIX: protección contra duplicados
+    const snap = await getDocs(
+      query(collection(db, 'citas'),
+        where('fechaStr', '==', data.fechaStr),
+        where('hora',     '==', data.hora),
+        where('estado',   '!=', 'cancelled')
+      )
+    );
+    if (!snap.empty) throw new Error('Ese horario ya está ocupado');
+    return addDoc(collection(db, 'citas'), {
+      ...data,
+      precio:   Number(data.precio) || 0,
+      duracion: Number(data.duracion) || 30,
+      estado:   'confirmed',
+      creadoEn: serverTimestamp(),
+    });
+  };
+
+  const completarCita = async (id) => {
+    const cita    = citas.find(c => c.id === id);
+    if (!cita) return;
+    const batch   = writeBatch(db);
+    batch.update(doc(db, 'citas', id), { estado: 'completed' });
+    if (cita.clientId) {
+      const cliente = clientes.find(c => c.id === cita.clientId);
+      if (cliente) {
+        batch.update(doc(db, 'clientes', cita.clientId), {
+          puntos:  (cliente.puntos  || 0) + 10,
+          visitas: (cliente.visitas || 0) + 1,
+        });
+      }
+    }
+    await batch.commit();
+  };
+
+  const cancelarCita = async (id) => {
+    await updateDoc(doc(db, 'citas', id), { estado: 'cancelled' });
+  };
+
+  const eliminarCita = async (id) => {
+    await deleteDoc(doc(db, 'citas', id));
+  };
+
+  // ── CRUD Servicios ────────────────────────────────────────────
+  const guardarServicio = async (id, data) => {
+    const precio = Number(data.precio);
+    if (isNaN(precio) || precio <= 0) throw new Error('Precio inválido');
+    const payload = {
+      nombre:   data.nombre?.trim() || '',
+      precio,
+      duracion: Number(data.duracion) || 30,
+      emoji:    data.emoji || '✂️',
+    };
+    if (id) await updateDoc(doc(db, 'servicios', id), payload);
+    else    await addDoc(collection(db, 'servicios'), payload);
+  };
+
+  const eliminarServicio = async (id) => {
+    await deleteDoc(doc(db, 'servicios', id));
+  };
 
   return (
     <AppContext.Provider value={{
       toast, showToast,
-      citas, completarCita, cancelarCita, agregarCita,
-      clientes, agregarCliente, actualizarCliente, eliminarCliente,
-      servicios, actualizarServicios, eliminarServicioCtx,
+      clientes, citas, servicios,
       citasHoy, ingresosMes, citasCompletadasMes,
-      loadingData,
+      loadingData, hoyStr,
+      agregarCliente, actualizarCliente, eliminarCliente,
+      agregarCita, completarCita, cancelarCita, eliminarCita,
+      guardarServicio, eliminarServicio,
+      nowMX, fechaStrMX,
     }}>
       {children}
     </AppContext.Provider>
