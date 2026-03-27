@@ -192,20 +192,21 @@ export default function Clientes() {
           style={{
             position:'fixed', inset:0, background:'rgba(0,0,0,.75)',
             display:'flex',
-            alignItems: window.innerWidth >= 768 ? 'center' : 'flex-end',
+            alignItems:'center',
             justifyContent:'center', zIndex:200, backdropFilter:'blur(4px)',
-            padding: window.innerWidth >= 768 ? 24 : 0,
+            padding:24,
           }}
         >
           <div
             onClick={e => e.stopPropagation()}
             style={{
-              background:'var(--elevated)', border:'1px solid var(--b-soft)',
-              borderRadius: window.innerWidth >= 768 ? 'var(--r-xl)' : 'var(--r-xl) var(--r-xl) 0 0',
-              padding:'28px 24px', width:'100%', maxWidth:440,
-              animation:'slideUp .3s var(--spring) both', boxShadow:'var(--sh-lg)',
-              maxHeight:'90dvh', overflowY:'auto',
-            }}
+            background:'var(--elevated)', border:'1px solid var(--b-soft)',
+            borderRadius:'var(--r-xl)',
+            padding:'28px 24px', width:'100%', maxWidth:440,
+            animation:'slideUp .3s var(--spring) both', boxShadow:'var(--sh-lg)',
+            maxHeight:'85dvh', overflowY:'auto',
+            margin: window.innerWidth >= 768 ? '0' : '20px 0 0 0',
+          }}
           >
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
               <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem' }}>
