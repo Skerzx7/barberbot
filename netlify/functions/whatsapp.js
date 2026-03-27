@@ -276,47 +276,129 @@ function validarFecha(fechaStr) {
 }
 
 // ── Claude SOLO para mensajes que no se pueden resolver con lógica ─
+// ── Tools que Claude puede llamar (autopilot loop — patrón ruflo) ──
+const CLAUDE_TOOLS = [
+  {
+    name: 'check_disponibilidad',
+    description: 'Verifica en tiempo real si un horario específico está libre antes de sugerirlo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        fechaStr: { type: 'string', description: 'Fecha en formato YYYY-MM-DD' },
+        hora:     { type: 'string', description: 'Hora en formato HH:MM (24h), ej: 10:00, 14:30' },
+      },
+      required: ['fechaStr', 'hora'],
+    },
+  },
+  {
+    name: 'responder_cliente',
+    description: 'Envía la respuesta final al cliente con la intención detectada y datos de la cita si aplica.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        intencion: {
+          type: 'string',
+          enum: ['cancelar','reagendar','agendar','cambiar_servicio','cambiar_fecha','cambiar_hora','disponibilidad','info','saludo','despedida','otro'],
+          description: 'Intención principal del mensaje',
+        },
+        servicio:  { type: 'string',  description: 'Nombre exacto del servicio tal como aparece en la lista, o null' },
+        fechaStr:  { type: 'string',  description: 'Fecha en formato YYYY-MM-DD o null' },
+        hora:      { type: 'string',  description: 'Hora en formato HH:MM o null' },
+        respuesta: { type: 'string',  description: 'Mensaje corto en español mexicano casual, máximo 2 oraciones' },
+      },
+      required: ['intencion', 'respuesta'],
+    },
+  },
+];
+
 async function llamarClaude(mensaje, historial, cliente, estado, servicios) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const svcsInfo  = servicios.map(s => `${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`).join('\n');
   const hoyStr    = formatFecha(new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Mexico_City' })));
 
+  const clientePerfilLineas = [
+    `Nombre: ${cliente.nombre}`,
+    cliente.visitas > 0 ? `Visitas: ${cliente.visitas}` : 'Clienta nueva',
+    cliente.puntos  > 0 ? `Puntos: ${cliente.puntos}` : null,
+  ].filter(Boolean).join(' | ');
+
   const system = `Eres Zai, asistente de WhatsApp de Barbería Zaira en México.
-SERVICIOS: ${svcsInfo}
+SERVICIOS DISPONIBLES:
+${svcsInfo}
+
 HORARIO: Lunes a sábado 9am a 7pm.
 HOY: ${hoyStr}
-CLIENTE: ${cliente.nombre}
+CLIENTE: ${clientePerfilLineas}
 ESTADO ACTUAL: paso=${estado.paso}, servicio=${estado.servicio||'ninguno'}, fecha=${estado.fechaStr||'ninguna'}, hora=${estado.hora||'ninguna'}
 
 JERGA MEXICANA: simón/simon=sí, nel=no, sale/va/órale=de acuerdo, qué onda/quiubo=hola, chamaco/morrito/escuincle=niño, de volada=rápido, ahorita=ahora
 
 REGLAS ESTRICTAS:
-- NUNCA menciones links ni páginas web
-- NUNCA inventes precios
-- Fechas NUNCA anteriores a hoy (${hoyStr})
-- Responde SOLO JSON sin texto extra:
-{
-  "intencion": "cancelar"|"reagendar"|"agendar"|"cambiar_servicio"|"cambiar_fecha"|"cambiar_hora"|"disponibilidad"|"info"|"saludo"|"despedida"|"otro",
-  "servicio": "nombre exacto del servicio o null",
-  "fechaStr": "YYYY-MM-DD o null",
-  "hora": "HH:MM o null",
-  "respuesta": "mensaje corto en español mexicano casual, max 2 oraciones, null si no aplica"
-}`;
+1. SIEMPRE usa check_disponibilidad antes de confirmar o sugerir un horario específico
+2. NUNCA menciones links ni páginas web
+3. NUNCA inventes precios — usa solo los de la lista
+4. Fechas NUNCA anteriores a hoy (${hoyStr})
+5. Si la clienta tiene visitas > 3, usa tono más familiar
+6. Termina SIEMPRE llamando a responder_cliente con tu respuesta final`;
+
+  const messages = [...historial, { role: 'user', content: mensaje }];
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514', max_tokens: 250, system,
-      messages: [...historial, { role: 'user', content: mensaje }],
+    let response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514', max_tokens: 400,
+      system, tools: CLAUDE_TOOLS, messages,
     });
-    const text   = response.content[0]?.text?.trim() || '{}';
-    const clean  = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    // Validar fecha que devuelve Claude
-    if (parsed.fechaStr && fechaEsPasada(parsed.fechaStr)) parsed.fechaStr = null;
-    return parsed;
+
+    // ── Autopilot loop (patrón ruflo: ejecutar tools hasta respuesta final) ──
+    let steps = 0;
+    while (response.stop_reason === 'tool_use' && steps < 5) {
+      steps++;
+      const toolBlocks  = response.content.filter(b => b.type === 'tool_use');
+      const toolResults = [];
+
+      for (const tb of toolBlocks) {
+        // Tool: responder_cliente → respuesta final, salir del loop
+        if (tb.name === 'responder_cliente') {
+          const r = tb.input;
+          if (r.fechaStr && fechaEsPasada(r.fechaStr)) r.fechaStr = null;
+          return r;
+        }
+
+        // Tool: check_disponibilidad → verificar y devolver resultado real
+        if (tb.name === 'check_disponibilidad') {
+          const { fechaStr, hora } = tb.input;
+          let resultado;
+          if (!fechaStr || !hora) {
+            resultado = { disponible: false, motivo: 'Fecha u hora no especificada' };
+          } else if (fechaEsPasada(fechaStr)) {
+            resultado = { disponible: false, motivo: 'Esa fecha ya pasó' };
+          } else if (new Date(fechaStr+'T12:00:00').getDay() === 0) {
+            resultado = { disponible: false, motivo: 'Los domingos no atendemos' };
+          } else {
+            const libre = await verificarDisponibilidad(fechaStr, hora);
+            resultado = { disponible: libre, fechaStr, hora };
+          }
+          toolResults.push({ type: 'tool_result', tool_use_id: tb.id, content: JSON.stringify(resultado) });
+        }
+      }
+
+      // Continuar con resultados de tools
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user',      content: toolResults });
+      response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514', max_tokens: 400,
+        system, tools: CLAUDE_TOOLS, messages,
+      });
+    }
+
+    // Respuesta de texto plano (Claude no usó herramientas)
+    const texto = response.content.find(b => b.type === 'text')?.text?.trim();
+    if (texto) return { intencion: 'otro', respuesta: texto };
+    return null;
+
   } catch(e) {
-    console.error('Claude error:', e.status || e.message);
-    return null; // null = Claude falló, manejar con lógica de respaldo
+    console.error('Claude tool error:', e.status || e.message);
+    return null;
   }
 }
 

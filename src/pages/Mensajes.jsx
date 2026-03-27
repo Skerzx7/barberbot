@@ -135,6 +135,10 @@ export default function Mensajes() {
           mensaje:       lastClientMsg.texto,
           historial:     messages.slice(-10).map(m => ({ de: m.de, texto: m.texto })),
           servicios:     servicios.map(s => ({ nombre: s.nombre, precio: s.precio, emoji: s.emoji })),
+          visitas:       cliente.visitas  || 0,
+          puntos:        cliente.puntos   || 0,
+          notas:         cliente.notas    || '',
+          proximaCita:   citaStr          || null,
         }),
       });
       const data = await res.json();
