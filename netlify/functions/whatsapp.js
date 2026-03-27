@@ -483,12 +483,15 @@ exports.handler = async (event) => {
     // ── CLIENTE ──────────────────────────────────────────────────
     let cliente = null;
     const clientesJson = await fsGet('clientes');
+    console.log(`Buscando cliente con tel: ${tel}`);
     for (const doc of (clientesJson.documents || [])) {
       const c      = parseDoc(doc);
       if (!c) continue;
       const telDoc = normalizarTel(c.telefono || '');
+      console.log(`Comparando: [${telDoc}] vs [${tel}]`);
       if (telDoc.length >= 8 && telDoc === tel) { cliente = c; break; }
     }
+    console.log(`Cliente encontrado: ${cliente ? cliente.nombre : 'NO ENCONTRADO'}`);
 
     if (cliente) {
       const botRes = await fsGet(`config_bot/${cliente.id}`);
