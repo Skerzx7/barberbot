@@ -115,25 +115,36 @@ async function setAdminModoPrueba(tel, a) {
 }
 
 // ── Estado conversación ───────────────────────────────────────────
-const ESTADO_VACIO = { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'', ultimoMensaje:'' };
+const ESTADO_VACIO = {
+  paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'', ultimoMensaje:'',
+  personaActual: 'cliente',   // quién es la cita: 'cliente'|'esposa'|'hijo'|'hija'|'mama'|'papa'
+  pendingActions: [],         // acciones multi-persona pendientes de ejecutar
+};
 
 async function getEstado(clienteId) {
   try {
     const doc = parseDoc(await fsGet(`conversacion_estado/${clienteId}`));
-    if (doc) return doc;
+    if (doc) {
+      let pendingActions = [];
+      try { if (doc.pendingActionsJson) pendingActions = JSON.parse(doc.pendingActionsJson); } catch {}
+      return { ...doc, pendingActions, personaActual: doc.personaActual || 'cliente' };
+    }
   } catch {}
   return { ...ESTADO_VACIO };
 }
 
 async function setEstado(clienteId, estado) {
   await fsSet(`conversacion_estado/${clienteId}`, toFields({
-    paso:          estado.paso      || 'inicio',
-    servicio:      estado.servicio  || '',
-    precio:        Number(estado.precio || 0),
-    emoji:         estado.emoji     || '',
-    fechaStr:      estado.fechaStr  || '',
-    hora:          estado.hora      || '',
-    ultimoMensaje: new Date().toISOString(),
+    paso:               estado.paso          || 'inicio',
+    servicio:           estado.servicio      || '',
+    precio:             Number(estado.precio || 0),
+    emoji:              estado.emoji         || '',
+    fechaStr:           estado.fechaStr      || '',
+    hora:               estado.hora          || '',
+    ultimoMensaje:      new Date().toISOString(),
+    personaActual:      estado.personaActual || 'cliente',
+    pendingActionsJson: (estado.pendingActions||[]).length
+      ? JSON.stringify(estado.pendingActions) : '',
   }));
 }
 
@@ -170,6 +181,35 @@ const ES_NO = /^(no|nel|nop|nope|nel\s*pastel|para\s*nada|negativo|nombre|nones|
 const ES_SALUDO = /^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas\s+tardes|buenas\s+noches|buenos\s+días|buenos\s+dias|qué\s+onda|que\s+onda|quiubo|quiúbo|quiubole|qué\s+pedo|que\s+pedo|qué\s+rollo|que\s+rollo|qué\s+tal|que\s+tal|qué\s+hubo|que\s+hubo|épale|epale|ey|oye|oe|wey|güey|wei|ke\s+onda|epa)(.{0,20})?$/i;
 
 const ES_DESPEDIDA = /^(gracias|ok|okey|de\s+nada|hasta\s+luego|bye|adios|adiós|listo|perfecto|excelente|genial|👍|np|sale|va|hasta\s+la\s+vista|nos\s+vemos|cuídate|cuídate\s+mucho|ahí\s+nos\s+vemos|ahí\s+nos\s+vidrios|orale\s+pues|órale\s+pues|chao|chau|hasta\s+pronto|mil\s+gracias|muchas\s+gracias|gracias\s+wey|gracias\s+güey)$/i;
+
+// ── Small talk: no debe resetear flujo activo ─────────────────────
+const ES_SMALL_TALK = /^(todo\s*(chido|bien|genial|ok|okey|tranqui)|(qué|que)\s+(tal|onda|hay|pex|rollo)|cómo\s+(estás|estas|andas|vas|te\s+va)|todo\s+tranquilo|bien\s+gracias|muy\s+bien|de\s+lujo|ahí\s+(la\s+)?(llevamos?|nomás?))(\?|!|\.)?$/i;
+
+// ── Personas: esposa, hijo, etc. ──────────────────────────────────
+const PERSONAS_MAP = {
+  esposa: /\bmi\s*(esposa|señora|mujer|novia|pareja|costilla)\b/i,
+  hijo:   /\bmi\s*(hijo|morrito|chamaco|escuincle|nene|chavo|morro|peque)\b|para\s+(el\s+)?(morrito|chamaco|escuincle)\b/i,
+  hija:   /\bmi\s*(hija|morrita|chamaca|nena|princesa)\b/i,
+  mama:   /\bmi\s*(mamá|mama|madre|jefa)\b/i,
+  papa:   /\bmi\s*(papá|papa|padre|jefe|viejo)\b/i,
+};
+
+function detectarPersona(t) {
+  for (const [persona, regex] of Object.entries(PERSONAS_MAP)) {
+    if (regex.test(t)) return persona;
+  }
+  return 'cliente';
+}
+
+function labelPersona(persona) {
+  const map = { esposa:'tu esposa', hijo:'tu hijo', hija:'tu hija', mama:'tu mamá', papa:'tu papá' };
+  return map[persona] || persona;
+}
+
+// ── Log estructurado para debugging ──────────────────────────────
+function log(tipo, data) {
+  console.log(`[BOT:${tipo}] ${JSON.stringify(data)}`);
+}
 
 // ── Fecha/hora ────────────────────────────────────────────────────
 function parsearFecha(texto) {
@@ -403,8 +443,9 @@ REGLAS ESTRICTAS:
 }
 
 // ── Helper texto confirmación ─────────────────────────────────────
-function txConfirm(emoji, servicio, fechaStr, hora, precio) {
-  return `Confirma tu cita:\n\n${emoji||'✂️'} ${servicio}\n📅 ${fechaLegible(fechaStr)}\n⏰ ${horaLegible(hora)}\n💰 $${precio}\n\n¿Va? (sí/no)`;
+function txConfirm(emoji, servicio, fechaStr, hora, precio, persona) {
+  const paraQuien = persona && persona !== 'cliente' ? ` para ${labelPersona(persona)}` : '';
+  return `Confirma tu cita${paraQuien}:\n\n${emoji||'✂️'} ${servicio}\n📅 ${fechaLegible(fechaStr)}\n⏰ ${horaLegible(hora)}\n💰 $${precio}\n\n¿Va? (sí/no)`;
 }
 
 // ── Detectar intención sin Claude (keywords) ──────────────────────
@@ -418,6 +459,85 @@ function detectarIntencion(t) {
   // Disponibilidad
   if (/(hay|tendr[aá]s|tienen|disponib)\s.*(cita|horario|lugar|hueco)/.test(t)) return 'disponibilidad';
   return null;
+}
+
+// ── Detectar múltiples intenciones en un mensaje ─────────────────
+function detectarMultiIntent(t) {
+  const tieneCancel  = /cancel|quita\s+la\s+cita|no\s+voy|ya\s+no\s+puedo|ya\s+no\s+quiero/.test(t);
+  const tieneAgendar = /\bagenda\b|agendar|reservar|apartar|apunta|saca\s+(una|cita)|\bcita\b/.test(t);
+
+  // Combo: "cancela la mía y agenda para ella/mi esposa/etc"
+  if (tieneCancel && tieneAgendar) {
+    const persona = detectarPersona(t);
+    return [
+      { type: 'cancelar', persona: 'cliente' },
+      { type: 'agendar',  persona },
+    ];
+  }
+
+  // Múltiples agendas: "una para mi esposa y otra para mi hijo"
+  const personasDetectadas = [];
+  for (const [p, regex] of Object.entries(PERSONAS_MAP)) {
+    if (regex.test(t)) personasDetectadas.push(p);
+  }
+  const incluyeYo = /para\s+m[ií]\b|la\s+m[ií]a|yo\s+también|a\s+mí\s+también/.test(t);
+  if (incluyeYo && personasDetectadas.length >= 1) personasDetectadas.unshift('cliente');
+  if (personasDetectadas.length >= 2 && tieneAgendar) {
+    return personasDetectadas.slice(0, 3).map(p => ({ type: 'agendar', persona: p }));
+  }
+
+  return null;
+}
+
+// ── Orquestador: ejecuta acciones en orden ────────────────────────
+async function procesarMultiIntent(acciones, mensaje, estado, cliente, servicios, saludo) {
+  const svcs           = servicios.filter(s => s.nombre);
+  const listaSinPrecio = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}`).join('\n');
+  const partes         = [];
+
+  // 1. Ejecutar todas las cancelaciones primero
+  for (const accion of acciones.filter(a => a.type === 'cancelar')) {
+    const n = await cancelarCitasPendientes(cliente.id);
+    await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita.\n📱 ${cliente.telefono||'Sin tel'}`);
+    partes.push(n > 0 ? `Listo, cancelé tu cita ✓` : `No encontré citas activas.`);
+    log('ACCION', { type: 'cancelar', cliente: cliente.nombre, canceladas: n });
+  }
+
+  // 2. Procesar la primera acción de agendar; las demás quedan pendientes
+  const agendarAcciones = acciones.filter(a => a.type === 'agendar');
+  const primera         = agendarAcciones[0];
+  const restantes       = agendarAcciones.slice(1);
+
+  if (primera) {
+    const infoEx      = extraerInfoCita(mensaje, svcs);
+    const personaLabel = primera.persona !== 'cliente' ? ` para ${labelPersona(primera.persona)}` : '';
+
+    if (infoEx.servicio && infoEx.fechaStr && infoEx.hora) {
+      const vf = validarFecha(infoEx.fechaStr);
+      if (vf.ok) {
+        const libre = await verificarDisponibilidad(infoEx.fechaStr, infoEx.hora);
+        if (libre) {
+          await setEstado(cliente.id, { paso:'confirmando', ...infoEx,
+            personaActual: primera.persona, pendingActions: restantes });
+          partes.push(txConfirm(infoEx.emoji, infoEx.servicio, infoEx.fechaStr, infoEx.hora, infoEx.precio, primera.persona));
+          log('ACCION', { type: 'agendar', persona: primera.persona, paso: 'confirmando' });
+          return (saludo + partes.join('\n\n')).trim();
+        }
+        partes.push(`Ese horario está ocupado 😬 ¿Tienes otro? De 9am a 7pm.`);
+      }
+    }
+
+    // Sin info completa — iniciar flujo de agendado para esta persona
+    await setEstado(cliente.id, {
+      paso:'esperando_servicio', servicio:'', precio:0, emoji:'',
+      fechaStr: infoEx.fechaStr||'', hora: infoEx.hora||'',
+      personaActual: primera.persona, pendingActions: restantes,
+    });
+    partes.push(`¿Qué servicio${personaLabel}?\n\n${listaSinPrecio}`);
+    log('ACCION', { type: 'agendar', persona: primera.persona, paso: 'esperando_servicio' });
+  }
+
+  return (saludo + partes.join('\n\n')).trim();
 }
 
 // ── Buscar servicio por keywords incluyendo mexicanismos ──────────
@@ -487,8 +607,10 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   if (estadoExpirado) {
     await resetEstado(cliente.id);
     estado = { ...ESTADO_VACIO };
-    console.log('Estado expirado — reseteado');
+    log('ESTADO', { evento: 'expirado_reseteado', cliente: cliente.nombre });
   }
+
+  log('INPUT', { cliente: cliente.nombre, paso: estado.paso, persona: estado.personaActual, msg: mensaje.slice(0,60) });
 
   // Saludo y nombre
   const saludar = !estado.ultimoMensaje || minutos > 240 || estadoExpirado;
@@ -500,15 +622,37 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   const listaSinPrecio = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}`).join('\n');
   const infoEx         = extraerInfoCita(mensaje, svcs);
 
-  // ── 1. SALUDO — resetea estado si estaba trabado ──────────────
+  // ── SMALL TALK: responder sin resetear flujo activo ───────────
+  if (ES_SMALL_TALK.test(t) && estado.paso !== 'inicio') {
+    const opciones = ['Todo chido 😄', 'Bien por acá 😊', 'De lujo!', 'Todo bien 😄'];
+    const base     = opciones[Math.floor(Math.random() * opciones.length)];
+    log('SMALL_TALK', { paso: estado.paso });
+    if (estado.paso === 'confirmando')        return `${base} Oye, ¿confirmas tu cita? 😊`;
+    if (estado.paso === 'esperando_servicio') return `${base} ¿Qué servicio te gustaría? 😊`;
+    if (estado.paso === 'esperando_fecha')    return `${base} ¿Para qué día quieres? 😊`;
+    if (estado.paso === 'esperando_hora')     return `${base} ¿A qué hora te va bien? 😊`;
+    return base;
+  }
+
+  // ── MULTI-INTENCIÓN: orquestar antes que la máquina de estados ─
+  const multiIntents = detectarMultiIntent(t);
+  if (multiIntents) {
+    log('MULTI_INTENT', { intents: multiIntents, cliente: cliente.nombre });
+    return await procesarMultiIntent(multiIntents, mensaje, estado, cliente, servicios, saludo);
+  }
+
+  // ── 1. SALUDO ─────────────────────────────────────────────────
   if (ES_SALUDO.test(t)) {
-    // Si estaba en confirmando, NO resetear — la cita sigue pendiente
     if (estado.paso === 'confirmando') {
-      return `${saludo.trim() ? saludo : ''}Oye, aún tienes una cita pendiente de confirmar 😊\n\n${txConfirm(estado.emoji, estado.servicio, estado.fechaStr, estado.hora, estado.precio)}`;
+      return `${saludo.trim() ? saludo : ''}Oye, tienes una cita pendiente 😊\n\n${txConfirm(estado.emoji, estado.servicio, estado.fechaStr, estado.hora, estado.precio, estado.personaActual)}`;
     }
     if (estado.paso !== 'inicio') await resetEstado(cliente.id);
-    if (saludar) return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n¿En qué te puedo ayudar?\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
-    return `¿En qué te puedo ayudar? 😊`;
+    if (saludar) {
+      const frecuente = (cliente?.visitas || 0) > 3;
+      if (frecuente) return `${saludo}Qué onda${nombre}! ¿Te agendo algo? 😊`;
+      return `${saludo}Bienvenid@ a Barbería Zaira 💅\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario`;
+    }
+    return `Claro, aquí andamos 😊 ¿Qué necesitas?`;
   }
 
   // ── 2. DESPEDIDA ──────────────────────────────────────────────
@@ -611,10 +755,34 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   if (estado.paso === 'confirmando') {
     // Sí
     if (ES_SI.test(t)) {
-      await crearCita(cliente.id, cliente.nombre, estado.servicio, estado.precio, estado.fechaStr, estado.hora);
+      const persona    = estado.personaActual || 'cliente';
+      const nombreCita = persona !== 'cliente'
+        ? `${cliente.nombre} (${labelPersona(persona)})`
+        : cliente.nombre;
+      await crearCita(cliente.id, nombreCita, estado.servicio, estado.precio, estado.fechaStr, estado.hora);
+      log('CITA_CREADA', { cliente: cliente.nombre, persona, servicio: estado.servicio, fecha: estado.fechaStr, hora: estado.hora });
+
+      const pending = estado.pendingActions || [];
+      await notificarAdmins(`📅 Nueva cita!\n👤 ${nombreCita}\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(estado.fechaStr)}\n⏰ ${horaLegible(estado.hora)}\n💰 $${estado.precio}\n📱 ${cliente.telefono||'Sin tel'}`);
+
+      const paraQuien  = persona !== 'cliente' ? ` para ${labelPersona(persona)}` : '';
+      const confirmMsg = `Cita confirmada${paraQuien}! 🎉\n\nTe esperamos el ${fechaLegible(estado.fechaStr)} a las ${horaLegible(estado.hora)}.`;
+
+      // ── Si hay citas pendientes (multi-persona) iniciar la siguiente ─
+      if (pending.length > 0) {
+        const next  = pending[0];
+        const lista = svcs.map((s,i) => `${i+1}. ${s.emoji||'✂️'} ${s.nombre}`).join('\n');
+        await setEstado(cliente.id, {
+          paso:'esperando_servicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'',
+          personaActual: next.persona, pendingActions: pending.slice(1),
+        });
+        const nextLabel = next.persona !== 'cliente' ? ` para ${labelPersona(next.persona)}` : '';
+        log('SIGUIENTE_PERSONA', { persona: next.persona });
+        return `${confirmMsg}\n\nAhora, ¿qué servicio${nextLabel}?\n\n${lista}`;
+      }
+
       await resetEstado(cliente.id);
-      await notificarAdmins(`📅 Nueva cita!\n👤 ${cliente.nombre}\n${estado.emoji||'✂️'} ${estado.servicio}\n📅 ${fechaLegible(estado.fechaStr)}\n⏰ ${horaLegible(estado.hora)}\n💰 $${estado.precio}\n📱 ${cliente.telefono||'Sin tel'}`);
-      return `Cita confirmada! 🎉\n\nTe esperamos el ${fechaLegible(estado.fechaStr)} a las ${horaLegible(estado.hora)}.\n\nSi necesitas cancelar avísanos 🙏`;
+      return `${confirmMsg}\n\nSi necesitas cancelar avísanos 🙏`;
     }
     // No
     if (ES_NO.test(t)) { await resetEstado(cliente.id); return `Va, sin problema. Si quieres para otro día aquí estoy 😊`; }
@@ -694,6 +862,7 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
     const n = await cancelarCitasPendientes(cliente.id);
     await resetEstado(cliente.id);
     await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita.\n📱 ${cliente.telefono||'Sin tel'}`);
+    log('CANCELAR', { cliente: cliente.nombre, canceladas: n });
     return n > 0 ? `Va, cita cancelada 👍 Si quieres agendar otra aquí estoy.` : `No encontré citas activas. ¿Quieres agendar una?`;
   }
 
@@ -722,6 +891,9 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
   const quiereAgendar = /\bcita\b|agendar|reservar|apartar|me\s+apuntas|apúntame|apuntame|me\s+puedes\s+dar\s+cita|échame\s+cita|hay\s+cita/.test(t) ||
     (t.includes('quiero') && (t.includes('corte') || t.includes('servicio') || t.includes('cita')));
 
+  // Detectar persona si la menciona en este mensaje
+  const personaMsg = detectarPersona(t);
+
   if (quiereAgendar || (infoEx.servicio && !estado.paso)) {
     if (infoEx.servicio && infoEx.fechaStr && infoEx.hora) {
       const vf = validarFecha(infoEx.fechaStr);
@@ -743,8 +915,11 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
       await setEstado(cliente.id, {paso:'esperando_servicio', fechaStr:infoEx.fechaStr, hora:infoEx.hora||'', servicio:'', precio:0, emoji:''});
       return `${saludo}¿Qué servicio te gustaría?\n\n${listaSvcs}`;
     }
-    await setEstado(cliente.id, {paso:'esperando_servicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:''});
-    return `${saludo}¿Qué servicio te gustaría?\n\n${listaSvcs}\n\nEscribe el número o el nombre.`;
+    await setEstado(cliente.id, { paso:'esperando_servicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'',
+      personaActual: personaMsg, pendingActions: [] });
+    const paraQuienAg = personaMsg !== 'cliente' ? ` para ${labelPersona(personaMsg)}` : '';
+    log('AGENDAR', { persona: personaMsg, paso: 'esperando_servicio' });
+    return `${saludo}¿Qué servicio${paraQuienAg} te gustaría?\n\n${listaSvcs}\n\nEscribe el número o el nombre.`;
   }
 
   // ── 10. PRECIOS / HORARIO ─────────────────────────────────────
@@ -855,19 +1030,45 @@ exports.handler = async (event) => {
     }
 
     if (!cliente) {
-      const ref = await fsPost('clientes', {
-        nombre:   { stringValue: 'Desconocid@' }, telefono: { stringValue: tel },
-        email:    { stringValue: '' }, notas: { stringValue: 'Registrad@ automáticamente por WhatsApp' },
-        visitas:  { integerValue: 0 }, puntos: { integerValue: 0 },
-        creadoEn: { timestampValue: new Date().toISOString() },
-      });
-      if (ref?.name) {
-        cliente = { id: ref.name.split('/').pop(), nombre: 'Desconocid@', telefono: tel };
-        await notificarAdmins(`👤 Nuev@ contacto!\n📱 +52${tel}\nEdítalo en la app.`);
+      log('CLIENTE_NUEVO', { tel, accion: 'creando' });
+      try {
+        const ref = await fsPost('clientes', {
+          nombre:   { stringValue: 'Desconocid@' },
+          telefono: { stringValue: tel },
+          email:    { stringValue: '' },
+          notas:    { stringValue: 'Registrad@ automáticamente por WhatsApp' },
+          visitas:  { integerValue: 0 },
+          puntos:   { integerValue: 0 },
+          creadoEn: { timestampValue: new Date().toISOString() },
+        });
+
+        // Log completo para debugging
+        log('CLIENTE_NUEVO_REF', { name: ref?.name || null, error: ref?.error || null });
+
+        if (ref?.name) {
+          cliente = {
+            id: ref.name.split('/').pop(),
+            nombre: 'Desconocid@',
+            telefono: tel,
+            visitas: 0,
+            puntos: 0,
+          };
+          log('CLIENTE_CREADO', { id: cliente.id, tel });
+          await notificarAdmins(`👤 Nuev@ contacto!\n📱 +52${tel}\nEdítalo en la app.`);
+        } else if (ref?.error) {
+          // Firestore devolvió error — loggear para debugging
+          log('CLIENTE_ERROR_FIRESTORE', { code: ref.error.code, msg: ref.error.message, tel });
+        }
+      } catch (e) {
+        log('CLIENTE_EXCEPTION', { error: e.message, tel });
       }
     }
 
-    if (!cliente) return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>Hola! Bienvenid@ a Barbería Zaira 💅</Body></Message></Response>` };
+    // Si Firestore falló al crear, igual responder y no bloquear el flujo
+    if (!cliente) {
+      log('CLIENTE_FALLBACK', { tel, motivo: 'fsPost falló, respondiendo sin persistencia' });
+      return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>Hola! Bienvenid@ a Barbería Zaira 💅\n\n✂️ Ver precios\n📅 Agendar cita\n🕐 Horario\n\nEscríbenos para ayudarte 😊</Body></Message></Response>` };
+    }
 
     const botRes = await fsGet(`config_bot/${cliente.id}`);
     if (parseDoc(botRes)?.activo === false) {
@@ -882,7 +1083,7 @@ exports.handler = async (event) => {
 
     await guardarMsg(cliente.id, 'client', mensaje);
     const respuesta = await procesarMensaje(mensaje, estado, cliente, servicios, historial);
-    console.log(`Respuesta: ${respuesta}`);
+    log('OUTPUT', { cliente: cliente.nombre, respuesta: respuesta.slice(0,80) });
     await guardarMsg(cliente.id, 'bot', respuesta);
 
     return { statusCode:200, headers:{'Content-Type':'text/xml'}, body:`<?xml version="1.0" encoding="UTF-8"?><Response><Message to="${from}"><Body>${respuesta}</Body></Message></Response>` };
