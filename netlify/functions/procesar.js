@@ -78,12 +78,19 @@ async function enviarWA(to, body) {
   const auth  = Buffer.from(`${sid}:${token}`).toString('base64');
   const toWA  = to.startsWith('whatsapp:') ? to : `whatsapp:+52${to}`;
   try {
-    await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    console.log(`[ENVIANDO WA] To: ${toWA} | From: ${NUMERO_BOT} | Body: ${body.slice(0,50)}`);
+    const res  = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
       method:'POST',
       headers:{ Authorization:`Basic ${auth}`, 'Content-Type':'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ From: NUMERO_BOT, To: toWA, Body: body }),
     });
-  } catch(e) { console.error('enviarWA error:', e.message); }
+    const data = await res.json();
+    if (res.ok) {
+      console.log(`[WA OK] SID: ${data.sid}`);
+    } else {
+      console.error(`[WA ERROR] ${res.status}: ${data.message || data.code} | to=${toWA} | from=${NUMERO_BOT}`);
+    }
+  } catch(e) { console.error(`[WA CATCH] ${e.message}`); }
 }
 async function notificarAdmins(msg) {
   const tels = [process.env.ADMIN_TEL_ZAIRA, process.env.ADMIN_TEL_JUAN].filter(Boolean);
