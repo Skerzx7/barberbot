@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { fechaStrMX, nowMX } from '../context/AppContext';
+import { nowMX } from '../context/AppContext';
 
 function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate()+n); return r; }
 const DAYS_ES = ['dom','lun','mar','mié','jue','vie','sáb'];

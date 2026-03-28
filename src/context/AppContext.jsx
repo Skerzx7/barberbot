@@ -20,10 +20,10 @@ export function fechaStrMX(date) {
 }
 
 export function AppProvider({ children }) {
-  const [toast,     setToast]     = useState(null);
-  const [clientes,  setClientes]  = useState([]);
-  const [citas,     setCitas]     = useState([]);
-  const [servicios, setServicios] = useState([]);
+  const [toast,       setToast]       = useState(null);
+  const [clientes,    setClientes]    = useState([]);
+  const [citas,       setCitas]       = useState([]);
+  const [servicios,   setServicios]   = useState([]);
   const [loadingData, setLoadingData] = useState(true);
 
   const showToast = useCallback((message, type = 'success', duration = 3500) => {
@@ -90,10 +90,31 @@ export function AppProvider({ children }) {
   // ── Stats con timezone Mexico ─────────────────────────────────
   const hoyStr = fechaStrMX();
 
-  const citasHoy = citas.filter(a => a.fechaStr === hoyStr);
+  const mx = nowMX();
+
+  // Fecha de mañana
+  const mañanaMX = new Date(mx);
+  mañanaMX.setDate(mañanaMX.getDate() + 1);
+  const mañanaStr = fechaStrMX(mañanaMX);
+
+  const citasHoy     = citas.filter(a => a.fechaStr === hoyStr);
+  const citasMañana  = citas.filter(a => a.fechaStr === mañanaStr && a.estado !== 'cancelled');
+
+  // Citas pendientes de hoy (confirmadas, no completadas ni canceladas)
+  const citasPendientesHoy = citasHoy.filter(a => a.estado === 'confirmed');
+  const citasCompletadasHoy = citasHoy.filter(a => a.estado === 'completed');
+
+  // Próxima cita global (la más próxima en el tiempo)
+  const proximaCitaGlobal = (() => {
+    const ahora = mx;
+    return citas
+      .filter(a => a.estado === 'confirmed' && a.fechaStr && a.hora)
+      .map(a => ({ ...a, dt: new Date(`${a.fechaStr}T${a.hora}`) }))
+      .filter(a => a.dt >= ahora)
+      .sort((a, b) => a.dt - b.dt)[0] || null;
+  })();
 
   const ingresosMes = (() => {
-    const mx = nowMX();
     return citas
       .filter(a => {
         if (a.estado !== 'completed' || !a.fechaStr) return false;
@@ -103,14 +124,43 @@ export function AppProvider({ children }) {
       .reduce((s, a) => s + (Number(a.precio) || 0), 0);
   })();
 
+  // Ingresos de la semana actual
+  const ingresosSemana = (() => {
+    const inicioSemana = new Date(mx);
+    inicioSemana.setDate(mx.getDate() - mx.getDay());
+    inicioSemana.setHours(0,0,0,0);
+    return citas
+      .filter(a => {
+        if (a.estado !== 'completed' || !a.fechaStr) return false;
+        const d = new Date(a.fechaStr + 'T12:00:00');
+        return d >= inicioSemana;
+      })
+      .reduce((s, a) => s + (Number(a.precio) || 0), 0);
+  })();
+
   const citasCompletadasMes = (() => {
-    const mx = nowMX();
     return citas.filter(a => {
       if (a.estado !== 'completed' || !a.fechaStr) return false;
       const d = new Date(a.fechaStr + 'T12:00:00');
       return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
     }).length;
   })();
+
+  // Tasa de completadas (vs total no canceladas del mes)
+  const tasaCompletadasMes = (() => {
+    const total = citas.filter(a => {
+      if (!a.fechaStr || a.estado === 'cancelled') return false;
+      const d = new Date(a.fechaStr + 'T12:00:00');
+      return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
+    }).length;
+    if (!total) return 0;
+    return Math.round((citasCompletadasMes / total) * 100);
+  })();
+
+  // Cliente con más visitas
+  const clienteTop = clientes.reduce((top, c) => {
+    return (c.visitas || 0) > (top?.visitas || 0) ? c : top;
+  }, null);
 
   // ── CRUD Clientes ─────────────────────────────────────────────
   const agregarCliente = async (data) => {
@@ -140,7 +190,6 @@ export function AppProvider({ children }) {
 
   // ── CRUD Citas ────────────────────────────────────────────────
   const agregarCita = async (data) => {
-    // FIX: protección contra duplicados
     const snap = await getDocs(
       query(collection(db, 'citas'),
         where('fechaStr', '==', data.fechaStr),
@@ -159,9 +208,9 @@ export function AppProvider({ children }) {
   };
 
   const completarCita = async (id) => {
-    const cita    = citas.find(c => c.id === id);
+    const cita  = citas.find(c => c.id === id);
     if (!cita) return;
-    const batch   = writeBatch(db);
+    const batch = writeBatch(db);
     batch.update(doc(db, 'citas', id), { estado: 'completed' });
     if (cita.clientId) {
       const cliente = clientes.find(c => c.id === cita.clientId);
@@ -205,8 +254,16 @@ export function AppProvider({ children }) {
     <AppContext.Provider value={{
       toast, showToast,
       clientes, citas, servicios,
-      citasHoy, ingresosMes, citasCompletadasMes,
-      loadingData, hoyStr,
+      // Stats hoy
+      citasHoy, citasPendientesHoy, citasCompletadasHoy,
+      // Stats mañana
+      citasMañana,
+      // Stats mes
+      ingresosMes, ingresosSemana, citasCompletadasMes, tasaCompletadasMes,
+      // Otros
+      proximaCitaGlobal, clienteTop,
+      loadingData, hoyStr, mañanaStr,
+      // CRUD
       agregarCliente, actualizarCliente, eliminarCliente,
       agregarCita, completarCita, cancelarCita, eliminarCita,
       guardarServicio, eliminarServicio,

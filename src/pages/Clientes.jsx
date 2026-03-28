@@ -2,13 +2,17 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
-function MenuContextual({ clienteId, onClose, onEliminar, onEditar }) {
+function nivelCliente(puntos) {
+  if (puntos >= 500) return { label:'Gold', color:'var(--gold)', bg:'var(--gold-bg)', border:'var(--gold-b)', emoji:'⭐' };
+  if (puntos >= 200) return { label:'Silver', color:'#9ba3b2', bg:'rgba(155,163,178,.1)', border:'rgba(155,163,178,.3)', emoji:'🥈' };
+  return null; // Bronze no se muestra para no saturar
+}
+
+function MenuContextual({ onClose, onEliminar, onEditar }) {
   const ref = useRef(null);
 
   useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) onClose();
-    };
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, []);
@@ -37,36 +41,33 @@ export default function Clientes() {
   const [params] = useSearchParams();
   const { showToast, clientes, agregarCliente, actualizarCliente, eliminarCliente, loadingData } = useApp();
 
-  const [search, setSearch]       = useState('');
-  const [showModal, setShowModal] = useState(params.get('nuevo') === '1');
-  const [editando, setEditando]   = useState(null); // cliente completo a editar
-  const [form, setForm]           = useState({ nombre:'', telefono:'', email:'', notas:'' });
-  const [saving, setSaving]       = useState(false);
-  const [menuAbierto, setMenuAbierto] = useState(null); // id del cliente con menu abierto
+  const [search,      setSearch]      = useState('');
+  const [sortBy,      setSortBy]      = useState('nombre'); // nombre | visitas | puntos
+  const [filterNivel, setFilterNivel] = useState('todos'); // todos | gold | silver | nuevas
+  const [showModal,   setShowModal]   = useState(params.get('nuevo') === '1');
+  const [editando,    setEditando]    = useState(null);
+  const [form,        setForm]        = useState({ nombre:'', telefono:'', email:'', notas:'' });
+  const [saving,      setSaving]      = useState(false);
+  const [menuAbierto, setMenuAbierto] = useState(null);
 
-  const filtered = clientes.filter(c =>
-    c.nombre?.toLowerCase().includes(search.toLowerCase()) ||
-    c.telefono?.includes(search)
-  );
+  const filtered = clientes
+    .filter(c => {
+      const matchSearch = c.nombre?.toLowerCase().includes(search.toLowerCase()) || c.telefono?.includes(search);
+      if (!matchSearch) return false;
+      if (filterNivel === 'gold')   return (c.puntos||0) >= 500;
+      if (filterNivel === 'silver') return (c.puntos||0) >= 200 && (c.puntos||0) < 500;
+      if (filterNivel === 'nuevas') return (c.visitas||0) === 0;
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'visitas') return (b.visitas||0) - (a.visitas||0);
+      if (sortBy === 'puntos')  return (b.puntos||0) - (a.puntos||0);
+      return (a.nombre||'').localeCompare(b.nombre||'');
+    });
 
-  const abrirNuevo = () => {
-    setEditando(null);
-    setForm({ nombre:'', telefono:'', email:'', notas:'' });
-    setShowModal(true);
-  };
-
-  const abrirEditar = (c) => {
-    setMenuAbierto(null);
-    setEditando(c);
-    setForm({ nombre: c.nombre||'', telefono: c.telefono||'', email: c.email||'', notas: c.notas||'' });
-    setShowModal(true);
-  };
-
-  const closeModal = () => {
-    setShowModal(false);
-    setEditando(null);
-    setForm({ nombre:'', telefono:'', email:'', notas:'' });
-  };
+  const abrirNuevo = () => { setEditando(null); setForm({ nombre:'', telefono:'', email:'', notas:'' }); setShowModal(true); };
+  const abrirEditar = (c) => { setMenuAbierto(null); setEditando(c); setForm({ nombre: c.nombre||'', telefono: c.telefono||'', email: c.email||'', notas: c.notas||'' }); setShowModal(true); };
+  const closeModal = () => { setShowModal(false); setEditando(null); setForm({ nombre:'', telefono:'', email:'', notas:'' }); };
 
   const handleSave = async () => {
     if (!form.nombre.trim()) return;
@@ -83,7 +84,6 @@ export default function Clientes() {
         navigate(`/clientes/${nuevo.id}`);
       }
     } catch (err) {
-      console.error(err);
       showToast('Error al guardar. Verifica tu conexión.', 'error');
     } finally {
       setSaving(false);
@@ -96,16 +96,27 @@ export default function Clientes() {
     try {
       await eliminarCliente(c.id);
       showToast('Clienta eliminada', 'info');
-    } catch (err) {
-      console.error(err);
-      showToast('Error al eliminar', 'error');
-    }
+    } catch { showToast('Error al eliminar', 'error'); }
   };
 
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:20, animation:'fadeIn .3s var(--ease) both' }}>
+  const FILTROS = [
+    { key:'todos',  label:'Todas' },
+    { key:'gold',   label:'⭐ Gold' },
+    { key:'silver', label:'🥈 Silver' },
+    { key:'nuevas', label:'✨ Nuevas' },
+  ];
 
-      <div style={{ display:'flex', gap:10 }}>
+  const SORTS = [
+    { key:'nombre',  label:'A–Z' },
+    { key:'visitas', label:'Visitas' },
+    { key:'puntos',  label:'Puntos' },
+  ];
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:16, animation:'fadeIn .3s var(--ease) both' }}>
+
+      {/* Buscar + nuevo */}
+      <div style={{ display:'flex', gap:8 }}>
         <div style={{ flex:1, position:'relative', display:'flex', alignItems:'center' }}>
           <span style={{ position:'absolute', left:13, color:'var(--muted)', fontSize:'0.85rem' }}>🔍</span>
           <input
@@ -120,98 +131,112 @@ export default function Clientes() {
         </button>
       </div>
 
-      <div style={{ display:'flex', gap:20, padding:'12px 16px', background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', fontSize:'0.78rem', color:'var(--text2)' }}>
+      {/* Stats rápidas */}
+      <div style={{ display:'flex', gap:16, padding:'10px 14px', background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', fontSize:'0.75rem', color:'var(--text2)', overflowX:'auto' }}>
         <span><strong style={{ color:'var(--text)' }}>{clientes.length}</strong> clientas</span>
+        <span><strong style={{ color:'var(--gold)' }}>{clientes.filter(c => (c.puntos||0) >= 500).length}</strong> Gold</span>
         <span><strong style={{ color:'var(--text)' }}>{clientes.filter(c => (c.visitas||0) > 0).length}</strong> con visitas</span>
-        <span><strong style={{ color:'var(--text)' }}>{clientes.reduce((s,c) => s+(c.visitas||0), 0)}</strong> visitas totales</span>
+        <span><strong style={{ color:'var(--green)' }}>{clientes.reduce((s,c) => s+(c.visitas||0), 0)}</strong> visitas totales</span>
       </div>
 
+      {/* Filtros + sort */}
+      <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
+        <div style={{ display:'flex', gap:4, flex:1, flexWrap:'wrap' }}>
+          {FILTROS.map(f => (
+            <button key={f.key} onClick={() => setFilterNivel(f.key)} style={{ height:28, padding:'0 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, fontFamily:'var(--font-b)', background: filterNivel===f.key ? 'var(--gold-bg)' : 'var(--elevated)', color: filterNivel===f.key ? 'var(--gold)' : 'var(--muted)', border: `1px solid ${filterNivel===f.key ? 'var(--gold-b)' : 'var(--b-subtle)'}`, transition:'all 150ms' }}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:'flex', gap:4 }}>
+          {SORTS.map(s => (
+            <button key={s.key} onClick={() => setSortBy(s.key)} style={{ height:28, padding:'0 10px', borderRadius:'var(--r-full)', fontSize:'0.7rem', fontWeight:600, background: sortBy===s.key ? 'var(--elevated)' : 'transparent', color: sortBy===s.key ? 'var(--text)' : 'var(--muted)', border: `1px solid ${sortBy===s.key ? 'var(--b-soft)' : 'transparent'}`, transition:'all 150ms' }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Lista */}
       {loadingData ? (
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
           {[0,1,2].map(i => <div key={i} style={{ height:76, borderRadius:'var(--r-lg)', background:'var(--surface)', border:'1px solid var(--b-subtle)' }} />)}
         </div>
       ) : filtered.length === 0 ? (
-        <div style={{ padding:'48px', textAlign:'center', color:'var(--muted)', fontSize:'0.875rem', background:'var(--surface)', border:'1px dashed var(--b-soft)', borderRadius:'var(--r-lg)', display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
+        <div style={{ padding:'40px', textAlign:'center', color:'var(--muted)', fontSize:'0.875rem', background:'var(--surface)', border:'1px dashed var(--b-soft)', borderRadius:'var(--r-lg)', display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
           <span style={{ fontSize:'2rem' }}>👥</span>
-          <p>{search ? 'Sin resultados' : 'Sin clientas registradas aún'}</p>
-          {!search && (
-            <button onClick={abrirNuevo} style={{ fontSize:'0.8rem', fontWeight:600, color:'var(--gold)', padding:'8px 16px', background:'var(--gold-bg)', border:'1px solid var(--gold-b)', borderRadius:'var(--r-full)' }}>
+          <p>{search || filterNivel !== 'todos' ? 'Sin resultados' : 'Sin clientas registradas aún'}</p>
+          {!search && filterNivel === 'todos' && (
+            <button onClick={abrirNuevo} style={{ fontSize:'0.78rem', fontWeight:600, color:'var(--gold)', padding:'7px 16px', background:'var(--gold-bg)', border:'1px solid var(--gold-b)', borderRadius:'var(--r-full)' }}>
               + Agregar primera clienta
             </button>
           )}
         </div>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-          {filtered.map(c => (
-            <div key={c.id} style={{ position:'relative' }}>
-              <button
-                onClick={() => { setMenuAbierto(null); navigate(`/clientes/${c.id}`); }}
-                style={{ display:'flex', alignItems:'center', gap:14, padding:16, paddingRight:48, background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-lg)', textAlign:'left', fontFamily:'var(--font-b)', transition:'all 150ms', width:'100%' }}
-                onMouseEnter={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background='var(--surface)'; e.currentTarget.style.borderColor='var(--b-subtle)'; }}
-              >
-                <div style={{ width:48, height:48, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-soft)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--gold)', fontFamily:'var(--font-d)', fontSize:'1.2rem', flexShrink:0 }}>
-                  {(c.nombre||'?')[0].toUpperCase()}
-                </div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontSize:'0.9rem', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.nombre}</div>
-                  <div style={{ fontSize:'0.75rem', color:'var(--muted)', marginTop:2 }}>{c.telefono || 'Sin teléfono'}</div>
-                  <div style={{ display:'flex', gap:12, marginTop:5 }}>
-                    <span style={{ fontSize:'0.68rem', color:'var(--muted)' }}>💅 {c.visitas || 0} visitas</span>
-                    {(c.puntos || 0) > 0 && <span style={{ fontSize:'0.68rem', color:'var(--gold)' }}>⭐ {c.puntos} pts</span>}
+          {filtered.map(c => {
+            const nivel = nivelCliente(c.puntos||0);
+            return (
+              <div key={c.id} style={{ position:'relative' }}>
+                <button
+                  onClick={() => { setMenuAbierto(null); navigate(`/clientes/${c.id}`); }}
+                  style={{ display:'flex', alignItems:'center', gap:12, padding:14, paddingRight:48, background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-lg)', textAlign:'left', fontFamily:'var(--font-b)', transition:'all 150ms', width:'100%' }}
+                  onMouseEnter={e => { e.currentTarget.style.background='var(--elevated)'; e.currentTarget.style.borderColor='var(--b-soft)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background='var(--surface)'; e.currentTarget.style.borderColor='var(--b-subtle)'; }}
+                >
+                  {/* Avatar */}
+                  <div style={{ width:44, height:44, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-soft)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--gold)', fontFamily:'var(--font-d)', fontSize:'1.1rem', flexShrink:0, position:'relative' }}>
+                    {(c.nombre||'?')[0].toUpperCase()}
+                    {/* Dot de nivel */}
+                    {nivel && (
+                      <span style={{ position:'absolute', bottom:0, right:0, width:14, height:14, borderRadius:'50%', background: nivel.bg, border:`1px solid ${nivel.border}`, fontSize:'0.5rem', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                        {nivel.emoji}
+                      </span>
+                    )}
                   </div>
-                </div>
-              </button>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                      <span style={{ fontSize:'0.875rem', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.nombre}</span>
+                      {nivel && (
+                        <span style={{ fontSize:'0.58rem', fontWeight:700, color: nivel.color, background: nivel.bg, border:`1px solid ${nivel.border}`, borderRadius:'var(--r-full)', padding:'1px 5px', flexShrink:0 }}>
+                          {nivel.label}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize:'0.72rem', color:'var(--muted)', marginTop:2 }}>{c.telefono || 'Sin teléfono'}</div>
+                    <div style={{ display:'flex', gap:10, marginTop:4 }}>
+                      <span style={{ fontSize:'0.65rem', color:'var(--muted)' }}>💅 {c.visitas || 0} visitas</span>
+                      {(c.puntos || 0) > 0 && <span style={{ fontSize:'0.65rem', color:'var(--gold)' }}>⭐ {c.puntos} pts</span>}
+                    </div>
+                  </div>
+                </button>
 
-              {/* Botón ⋯ */}
-              <button
-                onClick={e => { e.stopPropagation(); setMenuAbierto(menuAbierto === c.id ? null : c.id); }}
-                style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:28, height:28, borderRadius:'var(--r-sm)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--muted)', fontSize:'1rem', background:'transparent', transition:'all 150ms' }}
-                onMouseEnter={e => { e.currentTarget.style.background='var(--overlay)'; e.currentTarget.style.color='var(--text)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
-              >⋯</button>
+                <button
+                  onClick={e => { e.stopPropagation(); setMenuAbierto(menuAbierto === c.id ? null : c.id); }}
+                  style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', width:28, height:28, borderRadius:'var(--r-sm)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--muted)', fontSize:'1rem', background:'transparent', transition:'all 150ms' }}
+                  onMouseEnter={e => { e.currentTarget.style.background='var(--overlay)'; e.currentTarget.style.color='var(--text)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                >⋯</button>
 
-              {/* Menú contextual */}
-              {menuAbierto === c.id && (
-                <MenuContextual
-                  clienteId={c.id}
-                  onClose={() => setMenuAbierto(null)}
-                  onEditar={() => abrirEditar(c)}
-                  onEliminar={() => handleEliminar(c)}
-                />
-              )}
-            </div>
-          ))}
+                {menuAbierto === c.id && (
+                  <MenuContextual
+                    onClose={() => setMenuAbierto(null)}
+                    onEditar={() => abrirEditar(c)}
+                    onEliminar={() => handleEliminar(c)}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* Modal crear / editar */}
+      {/* Modal */}
       {showModal && (
-        <div
-          onClick={closeModal}
-          style={{
-            position:'fixed', inset:0, background:'rgba(0,0,0,.75)',
-            display:'flex',
-            alignItems:'center',
-            justifyContent:'center', zIndex:200, backdropFilter:'blur(4px)',
-            padding:24,
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-            background:'var(--elevated)', border:'1px solid var(--b-soft)',
-            borderRadius:'var(--r-xl)',
-            padding:'28px 24px', width:'100%', maxWidth:440,
-            animation:'slideUp .3s var(--spring) both', boxShadow:'var(--sh-lg)',
-            maxHeight:'85dvh', overflowY:'auto',
-            margin: window.innerWidth >= 768 ? '0' : '20px 0 0 0',
-          }}
-          >
+        <div onClick={closeModal} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.75)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:200, backdropFilter:'blur(4px)', padding:24 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-xl)', padding:'28px 24px', width:'100%', maxWidth:440, animation:'slideUp .3s var(--spring) both', boxShadow:'var(--sh-lg)', maxHeight:'85dvh', overflowY:'auto' }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20 }}>
-              <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem' }}>
-                {editando ? 'Editar clienta' : 'Nueva clienta'}
-              </h3>
+              <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem' }}>{editando ? 'Editar clienta' : 'Nueva clienta'}</h3>
               <button onClick={closeModal} style={{ width:30, height:30, borderRadius:'50%', background:'var(--overlay)', color:'var(--text2)', fontSize:'0.85rem', display:'flex', alignItems:'center', justifyContent:'center' }}>✕</button>
             </div>
 
@@ -228,6 +253,7 @@ export default function Clientes() {
                     style={{ width:'100%', height:42, background:'var(--surface)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', padding:'0 14px', color:'var(--text)', fontSize:'0.875rem' }}
                     value={form[key]}
                     onChange={e => setForm(v => ({...v, [key]: e.target.value}))}
+                    autoFocus={key === 'nombre'}
                   />
                 </div>
               ))}
@@ -243,18 +269,13 @@ export default function Clientes() {
             </div>
 
             <div style={{ display:'flex', gap:10, marginTop:20 }}>
-              <button onClick={closeModal} style={{ flex:1, height:42, background:'var(--elevated)', color:'var(--text2)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', fontSize:'0.875rem', fontFamily:'var(--font-b)' }}>
-                Cancelar
-              </button>
+              <button onClick={closeModal} style={{ flex:1, height:42, background:'var(--elevated)', color:'var(--text2)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', fontSize:'0.875rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
               <button
                 onClick={handleSave}
                 disabled={saving || !form.nombre.trim()}
                 style={{ flex:1, height:42, background: form.nombre.trim()?'var(--gold)':'var(--elevated)', color: form.nombre.trim()?'#000':'var(--muted)', borderRadius:'var(--r-md)', fontSize:'0.875rem', fontWeight:600, fontFamily:'var(--font-b)', display:'flex', alignItems:'center', justifyContent:'center', gap:6, opacity: form.nombre.trim()?1:0.5 }}
               >
-                {saving
-                  ? <span style={{ width:16, height:16, border:'2px solid rgba(0,0,0,.3)', borderTopColor:'#000', borderRadius:'50%', animation:'spin .7s linear infinite' }}/>
-                  : editando ? 'Actualizar' : 'Guardar'
-                }
+                {saving ? <span style={{ width:16, height:16, border:'2px solid rgba(0,0,0,.3)', borderTopColor:'#000', borderRadius:'50%', animation:'spin .7s linear infinite' }}/> : editando ? 'Actualizar' : 'Guardar'}
               </button>
             </div>
           </div>

@@ -4,7 +4,7 @@ import { useApp } from '../context/AppContext';
 const EMOJIS = ['✂️','🪒','💈','⚡','✨','👦','💇','🧴','💆','🎨'];
 
 export default function Configuracion() {
-  const { showToast, servicios, guardarServicio, eliminarServicio } = useApp();
+  const { showToast, servicios, guardarServicio, eliminarServicio, citas } = useApp();
 
   const [editandoId, setEditandoId] = useState(null);
   const [form,       setForm]       = useState({});
@@ -12,16 +12,23 @@ export default function Configuracion() {
   const [agregando,  setAgregando]  = useState(false);
   const [nuevoForm,  setNuevoForm]  = useState({ nombre:'', precio:'', duracion:'30', emoji:'✂️' });
 
+  // Calcular cuántas veces se usó cada servicio
+  const usoPorServicio = {};
+  citas.forEach(a => {
+    if (a.estado !== 'cancelled') {
+      usoPorServicio[a.servicio] = (usoPorServicio[a.servicio] || 0) + 1;
+    }
+  });
+
   const abrirEditar = (svc) => {
     setEditandoId(svc.id);
     setForm({ nombre: svc.nombre, precio: String(svc.precio), duracion: String(svc.duracion||30), emoji: svc.emoji||'✂️' });
   };
 
   const handleGuardar = async (id) => {
-    // FIX: validar precio antes de guardar
     const precio = Number(form.precio);
     if (!form.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
-    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser un número mayor a 0', 'error'); return; }
+    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser mayor a 0', 'error'); return; }
     setSaving(true);
     try {
       await guardarServicio(id, { ...form, precio });
@@ -29,9 +36,7 @@ export default function Configuracion() {
       showToast('Servicio guardado ✓', 'success');
     } catch(err) {
       showToast(err.message || 'Error al guardar', 'error');
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   const handleEliminar = async (id, nombre) => {
@@ -39,15 +44,13 @@ export default function Configuracion() {
     try {
       await eliminarServicio(id);
       showToast('Servicio eliminado', 'info');
-    } catch(err) {
-      showToast('Error al eliminar', 'error');
-    }
+    } catch { showToast('Error al eliminar', 'error'); }
   };
 
   const handleAgregar = async () => {
     const precio = Number(nuevoForm.precio);
     if (!nuevoForm.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
-    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser un número mayor a 0', 'error'); return; }
+    if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser mayor a 0', 'error'); return; }
     setSaving(true);
     try {
       await guardarServicio(null, { ...nuevoForm, precio });
@@ -56,9 +59,7 @@ export default function Configuracion() {
       showToast('Servicio agregado ✓', 'success');
     } catch(err) {
       showToast(err.message || 'Error al agregar', 'error');
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   const inp = {
@@ -66,31 +67,56 @@ export default function Configuracion() {
     padding:'0 12px', color:'var(--text)', fontSize:'0.875rem', fontFamily:'var(--font-b)',
   };
 
-  const section = (title, emoji, children) => (
-    <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-xl)', padding:20, display:'flex', flexDirection:'column', gap:16 }}>
-      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-        <span>{emoji}</span>
-        <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1rem', fontWeight:500, flex:1 }}>{title}</h3>
-      </div>
-      {children}
-    </div>
-  );
+  // Ingresos potenciales por servicio (precio × usos)
+  const ingresosPorServicio = (svc) => {
+    const usos = usoPorServicio[svc.nombre] || 0;
+    return usos * svc.precio;
+  };
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:20, animation:'fadeIn .3s var(--ease) both', maxWidth:640 }}>
 
-      {section('Catálogo de servicios', '💈', (
-        <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+      {/* Stats globales de servicios */}
+      {servicios.length > 0 && (
+        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8 }}>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', padding:'10px 12px', textAlign:'center' }}>
+            <div style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem', fontWeight:500, color:'var(--gold)' }}>{servicios.length}</div>
+            <div style={{ fontSize:'0.65rem', color:'var(--muted)', marginTop:2 }}>Servicios</div>
+          </div>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', padding:'10px 12px', textAlign:'center' }}>
+            <div style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem', fontWeight:500, color:'var(--green)' }}>
+              ${Math.min(...servicios.map(s => s.precio))}–${Math.max(...servicios.map(s => s.precio))}
+            </div>
+            <div style={{ fontSize:'0.65rem', color:'var(--muted)', marginTop:2 }}>Rango precios</div>
+          </div>
+          <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', padding:'10px 12px', textAlign:'center' }}>
+            <div style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem', fontWeight:500, color:'var(--blue)' }}>
+              ${Math.round(servicios.reduce((s,x) => s+x.precio, 0) / servicios.length)}
+            </div>
+            <div style={{ fontSize:'0.65rem', color:'var(--muted)', marginTop:2 }}>Precio promedio</div>
+          </div>
+        </div>
+      )}
+
+      {/* Catálogo */}
+      <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-xl)', padding:20, display:'flex', flexDirection:'column', gap:16 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span>💈</span>
+          <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1rem', fontWeight:500, flex:1 }}>Catálogo de servicios</h3>
+        </div>
+
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
           {servicios.length === 0 && (
-            <p style={{ fontSize:'0.8rem', color:'var(--muted)', textAlign:'center', padding:12 }}>Sin servicios aún. Agrega el primero.</p>
+            <p style={{ fontSize:'0.8rem', color:'var(--muted)', textAlign:'center', padding:12 }}>Sin servicios aún.</p>
           )}
 
-          {servicios.map(svc => (
-            <div key={svc.id} style={{ background:'var(--elevated)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', overflow:'hidden' }}>
-              {editandoId === svc.id ? (
-                // Modo edición
-                <div style={{ padding:12, display:'flex', flexDirection:'column', gap:10 }}>
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+          {servicios.map(svc => {
+            const usos = usoPorServicio[svc.nombre] || 0;
+            const ingresos = ingresosPorServicio(svc);
+            return (
+              <div key={svc.id} style={{ background:'var(--elevated)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', overflow:'hidden' }}>
+                {editandoId === svc.id ? (
+                  <div style={{ padding:12, display:'flex', flexDirection:'column', gap:10 }}>
                     {/* Emoji picker */}
                     <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
                       {EMOJIS.map(e => (
@@ -99,51 +125,53 @@ export default function Configuracion() {
                         </button>
                       ))}
                     </div>
-                  </div>
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                    <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
-                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre</label>
-                      <input style={{ ...inp, height:36, width:'100%' }} value={form.nombre} onChange={e => setForm(f => ({...f, nombre:e.target.value}))} />
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                      <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
+                        <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre</label>
+                        <input style={{ ...inp, height:36, width:'100%' }} value={form.nombre} onChange={e => setForm(f => ({...f, nombre:e.target.value}))} autoFocus />
+                      </div>
+                      <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                        <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $</label>
+                        <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} value={form.precio} onChange={e => setForm(f => ({...f, precio:e.target.value}))} />
+                      </div>
+                      <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
+                        <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
+                        <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} value={form.duracion} onChange={e => setForm(f => ({...f, duracion:e.target.value}))} />
+                      </div>
                     </div>
-                    <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
-                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $</label>
-                      <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} value={form.precio} onChange={e => setForm(f => ({...f, precio:e.target.value}))} />
-                    </div>
-                    <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
-                      <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
-                      <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} value={form.duracion} onChange={e => setForm(f => ({...f, duracion:e.target.value}))} />
+                    <div style={{ display:'flex', gap:8 }}>
+                      <button onClick={() => setEditandoId(null)} style={{ flex:1, height:34, background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', color:'var(--text2)', fontSize:'0.8rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
+                      <button onClick={() => handleGuardar(svc.id)} disabled={saving} style={{ flex:2, height:34, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}>
+                        {saving ? '...' : 'Guardar'}
+                      </button>
                     </div>
                   </div>
-                  <div style={{ display:'flex', gap:8 }}>
-                    <button onClick={() => setEditandoId(null)} style={{ flex:1, height:34, background:'var(--elevated)', border:'1px solid var(--b-soft)', borderRadius:'var(--r-md)', color:'var(--text2)', fontSize:'0.8rem', fontFamily:'var(--font-b)' }}>Cancelar</button>
-                    <button onClick={() => handleGuardar(svc.id)} disabled={saving} style={{ flex:2, height:34, background:'var(--gold)', color:'#000', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)' }}>
-                      {saving ? '...' : 'Guardar'}
-                    </button>
+                ) : (
+                  <div style={{ display:'flex', alignItems:'center', gap:10, padding:'11px 12px' }}>
+                    <span style={{ fontSize:'1.25rem', flexShrink:0 }}>{svc.emoji||'✂️'}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ fontSize:'0.85rem', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{svc.nombre}</div>
+                      <div style={{ display:'flex', gap:8, marginTop:2 }}>
+                        <span style={{ fontSize:'0.65rem', color:'var(--muted)' }}>{svc.duracion} min</span>
+                        {usos > 0 && <span style={{ fontSize:'0.65rem', color:'var(--green)' }}>✓ {usos} citas · ${ingresos.toLocaleString()}</span>}
+                      </div>
+                    </div>
+                    <span style={{ fontFamily:'var(--font-m)', fontSize:'0.9rem', color:'var(--gold)', fontWeight:500, flexShrink:0 }}>${svc.precio}</span>
+                    <button onClick={() => abrirEditar(svc)} style={{ width:26, height:26, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.75rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                      onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                    >✏️</button>
+                    <button onClick={() => handleEliminar(svc.id, svc.nombre)} style={{ width:26, height:26, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.75rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
+                      onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
+                    >🗑</button>
                   </div>
-                </div>
-              ) : (
-                // Modo vista
-                <div style={{ display:'flex', alignItems:'center', gap:12, padding:'12px 14px' }}>
-                  <span style={{ fontSize:'1.3rem', flexShrink:0 }}>{svc.emoji||'✂️'}</span>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:'0.875rem', fontWeight:500, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{svc.nombre}</div>
-                    <div style={{ fontSize:'0.7rem', color:'var(--muted)', marginTop:1 }}>{svc.duracion} min</div>
-                  </div>
-                  <span style={{ fontFamily:'var(--font-m)', fontSize:'0.9rem', color:'var(--gold)', fontWeight:500, flexShrink:0 }}>${svc.precio}</span>
-                  <button onClick={() => abrirEditar(svc)} style={{ width:28, height:28, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-                    onMouseEnter={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
-                  >✏️</button>
-                  <button onClick={() => handleEliminar(svc.id, svc.nombre)} style={{ width:28, height:28, borderRadius:'var(--r-sm)', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}
-                    onMouseEnter={e => { e.currentTarget.style.background='var(--red-bg)'; e.currentTarget.style.color='var(--red)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--muted)'; }}
-                  >🗑</button>
-                </div>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            );
+          })}
 
-          {/* Formulario nuevo servicio */}
+          {/* Form nuevo */}
           {agregando ? (
             <div style={{ padding:12, background:'var(--elevated)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', display:'flex', flexDirection:'column', gap:10 }}>
               <div style={{ display:'flex', gap:4, flexWrap:'wrap' }}>
@@ -156,7 +184,7 @@ export default function Configuracion() {
               <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
                 <div style={{ flex:2, minWidth:120, display:'flex', flexDirection:'column', gap:4 }}>
                   <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Nombre *</label>
-                  <input style={{ ...inp, height:36, width:'100%' }} placeholder="Ej: Corte de cabello" value={nuevoForm.nombre} onChange={e => setNuevoForm(f => ({...f, nombre:e.target.value}))} />
+                  <input style={{ ...inp, height:36, width:'100%' }} placeholder="Ej: Corte de cabello" value={nuevoForm.nombre} onChange={e => setNuevoForm(f => ({...f, nombre:e.target.value}))} autoFocus />
                 </div>
                 <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
                   <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $ *</label>
@@ -175,7 +203,7 @@ export default function Configuracion() {
               </div>
             </div>
           ) : (
-            <button onClick={() => setAgregando(true)} style={{ height:38, background:'var(--gold-bg)', color:'var(--gold)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', fontSize:'0.8rem', fontWeight:600, fontFamily:'var(--font-b)', transition:'all 150ms' }}
+            <button onClick={() => setAgregando(true)} style={{ height:36, background:'var(--gold-bg)', color:'var(--gold)', border:'1px dashed var(--gold-b)', borderRadius:'var(--r-md)', fontSize:'0.78rem', fontWeight:600, fontFamily:'var(--font-b)', transition:'all 150ms' }}
               onMouseEnter={e => { e.currentTarget.style.background='var(--gold)'; e.currentTarget.style.color='#000'; e.currentTarget.style.borderStyle='solid'; }}
               onMouseLeave={e => { e.currentTarget.style.background='var(--gold-bg)'; e.currentTarget.style.color='var(--gold)'; e.currentTarget.style.borderStyle='dashed'; }}
             >
@@ -183,11 +211,22 @@ export default function Configuracion() {
             </button>
           )}
         </div>
-      ))}
+      </div>
 
-      <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 4px', fontSize:'0.7rem', color:'var(--muted)' }}>
+      {/* Reglas Firebase reminder */}
+      <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-lg)', padding:14, display:'flex', flexDirection:'column', gap:8 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span>🔒</span>
+          <h3 style={{ fontFamily:'var(--font-d)', fontSize:'0.9rem', fontWeight:500 }}>Reglas Firebase</h3>
+        </div>
+        <p style={{ fontSize:'0.75rem', color:'var(--muted)', lineHeight:1.5 }}>
+          Las reglas están en modo abierto para permitir al bot escribir desde el webhook. Antes de lanzar con clientas reales, considera agregar autenticación.
+        </p>
+      </div>
+
+      <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 4px', fontSize:'0.68rem', color:'var(--muted)' }}>
         <span>Barbería Zaira</span>
-        <span style={{ fontFamily:'var(--font-m)' }}>BarberBot v2.0</span>
+        <span style={{ fontFamily:'var(--font-m)' }}>BarberBot v2.1</span>
       </div>
     </div>
   );

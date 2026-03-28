@@ -176,11 +176,17 @@ async function getHistorial(clienteId) {
 // ── Diccionario mexicano ──────────────────────────────────────────
 const ES_SI = /^(sí|si|yes|simon|simón|seimón|dale|ok|okey|claro|va|órale|orale|andale|ándale|sale|np|perfecto|listo|chido|échale|echale|de\s*una|de\s*volada|simona|a\s*huevo|pos\s*sí|pos\s*si|pus\s*si|pues\s*si|bueno|ta\s*bien|ta\s*bueno|tá\s*bien|mande|cómo\s*no|por\s*supuesto|seguro|école|confirmado|confirmo|correcto|exacto|así\s*es|con\s*todo|ya\s*va|va\s*que\s*va|simon\s*que\s*si)$/i;
 
-const ES_NO = /^(no|nel|nop|nope|nel\s*pastel|para\s*nada|negativo|nombre|nones|ni\s*modo|mejor\s*no|nah|pos\s*no|pus\s*no|pues\s*no|de\s*ninguna\s*manera|nel\s*wey|nel\s*güey)$/i;
+// BUG FIX: quitamos "nombre" de ES_NO — falso positivo si clienta pregunta por el nombre del lugar
+// "mejor no" se queda pero "mejor un X" lo maneja detectarIntencion primero
+const ES_NO = /^(no|nel|nop|nope|nel\s*pastel|para\s*nada|negativo|nones|ni\s*modo|nah|pos\s*no|pus\s*no|pues\s*no|de\s*ninguna\s*manera|nel\s*wey|nel\s*güey|mejor\s*no)$/i;
 
-const ES_SALUDO = /^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas\s+tardes|buenas\s+noches|buenos\s+días|buenos\s+dias|qué\s+onda|que\s+onda|quiubo|quiúbo|quiubole|qué\s+pedo|que\s+pedo|qué\s+rollo|que\s+rollo|qué\s+tal|que\s+tal|qué\s+hubo|que\s+hubo|épale|epale|ey|oye|oe|wey|güey|wei|ke\s+onda|epa)(.{0,20})?$/i;
+// BUG FIX: reducir (.{0,20})? a (.{0,10})? para evitar que "hola fer como andas" (19 chars) resetee el estado
+// Saludos con contenido real ("hola quiero un corte") deben pasar al flujo normal
+const ES_SALUDO = /^(hola|buenas|buenos|buen|hi|hey|saludos|ola|buenas\s+tardes|buenas\s+noches|buenos\s+días|buenos\s+dias|qué\s+onda|que\s+onda|quiubo|quiúbo|quiubole|qué\s+pedo|que\s+pedo|qué\s+rollo|que\s+rollo|qué\s+tal|que\s+tal|qué\s+hubo|que\s+hubo|épale|epale|ey|oye|oe|wey|güey|wei|ke\s+onda|epa)(.{0,10})?$/i;
 
-const ES_DESPEDIDA = /^(gracias|ok|okey|de\s+nada|hasta\s+luego|bye|adios|adiós|listo|perfecto|excelente|genial|👍|np|sale|va|hasta\s+la\s+vista|nos\s+vemos|cuídate|cuídate\s+mucho|ahí\s+nos\s+vemos|ahí\s+nos\s+vidrios|orale\s+pues|órale\s+pues|chao|chau|hasta\s+pronto|mil\s+gracias|muchas\s+gracias|gracias\s+wey|gracias\s+güey)$/i;
+// BUG FIX: quitamos ok/sale/va/listo/perfecto/np porque también son confirmaciones (ES_SI)
+// Si el cliente dice "ok" en confirmando debe confirmar, no despedirse
+const ES_DESPEDIDA = /^(gracias|de\s+nada|hasta\s+luego|bye|adios|adiós|excelente|genial|👍|hasta\s+la\s+vista|nos\s+vemos|cuídate|cuídate\s+mucho|ahí\s+nos\s+vemos|ahí\s+nos\s+vidrios|orale\s+pues|órale\s+pues|chao|chau|hasta\s+pronto|mil\s+gracias|muchas\s+gracias|gracias\s+wey|gracias\s+güey)$/i;
 
 // ── Small talk: no debe resetear flujo activo ─────────────────────
 const ES_SMALL_TALK = /^(todo\s*(chido|bien|genial|ok|okey|tranqui)|(qué|que)\s+(tal|onda|hay|pex|rollo)|cómo\s+(estás|estas|andas|vas|te\s+va)|todo\s+tranquilo|bien\s+gracias|muy\s+bien|de\s+lujo|ahí\s+(la\s+)?(llevamos?|nomás?))(\?|!|\.)?$/i;
@@ -450,8 +456,8 @@ function txConfirm(emoji, servicio, fechaStr, hora, precio, persona) {
 
 // ── Detectar intención sin Claude (keywords) ──────────────────────
 function detectarIntencion(t) {
-  // Cambio de servicio
-  if (/mejor\s+un|quisiera\s+(mejor\s+)?(un|una)|cambia\s+el\s+servicio|otro\s+servicio|prefiero\s+un|en\s+vez\s+de|en\s+lugar\s+de/.test(t)) return 'cambiar_servicio';
+  // Cambio de servicio — asegurarse que NO sea "mejor no"
+  if (!ES_NO.test(t) && /mejor\s+un|quisiera\s+(mejor\s+)?(un|una)|cambia\s+el\s+servicio|otro\s+servicio|prefiero\s+un|en\s+vez\s+de|en\s+lugar\s+de/.test(t)) return 'cambiar_servicio';
   // Cancelar
   if (/cancel|quita\s+la\s+cita|no\s+voy|ya\s+no\s+puedo|ya\s+no\s+quiero/.test(t)) return 'cancelar';
   // Reagendar
@@ -600,20 +606,22 @@ async function procesarMensaje(mensaje, estado, cliente, servicios, historial) {
     : 999;
 
   // FIX: expirar estados intermedios después de 30 minutos
-  // Si el cliente no respondió en 30 min y manda algo nuevo, resetear
   const PASOS_INTERMEDIOS = ['esperando_servicio', 'esperando_fecha', 'esperando_hora'];
   const estadoExpirado = PASOS_INTERMEDIOS.includes(estado.paso) && minutos > 30;
 
-  if (estadoExpirado) {
+  // FIX BUG 6: confirmando expira después de 24h (no 30 min, la cita puede seguir pendiente)
+  const confirmandoExpirado = estado.paso === 'confirmando' && minutos > 1440;
+
+  if (estadoExpirado || confirmandoExpirado) {
     await resetEstado(cliente.id);
     estado = { ...ESTADO_VACIO };
-    log('ESTADO', { evento: 'expirado_reseteado', cliente: cliente.nombre });
+    log('ESTADO', { evento: confirmandoExpirado ? 'confirmando_expirado_24h' : 'expirado_reseteado', cliente: cliente.nombre });
   }
 
   log('INPUT', { cliente: cliente.nombre, paso: estado.paso, persona: estado.personaActual, msg: mensaje.slice(0,60) });
 
   // Saludo y nombre
-  const saludar = !estado.ultimoMensaje || minutos > 240 || estadoExpirado;
+  const saludar = !estado.ultimoMensaje || minutos > 240 || estadoExpirado || confirmandoExpirado;
   const nombre  = cliente?.nombre && cliente.nombre !== 'Desconocid@' ? ` ${cliente.nombre.split(' ')[0]}` : '';
   const saludo  = saludar ? `Hola${nombre}! 😊\n\n` : '';
 
