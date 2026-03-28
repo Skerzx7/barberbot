@@ -410,52 +410,114 @@ async function procesarAdmin(cmd, tel) {
 
 // ── Handler principal ─────────────────────────────────────────────
 
-// ── Handler webhook Twilio ────────────────────────────────────────
-// Patrón fire-and-forget: responde vacío a Twilio en <500ms
-// para evitar timeout, y procesa en background via función separada.
+// ── Función de procesamiento en background ────────────────────────
 exports.handler = async (event) => {
-  if (event.httpMethod !== 'POST') return { statusCode:405, body:'Method not allowed' };
+  if (event.httpMethod !== 'POST') return { statusCode:405, body:'ok' };
 
-  const params  = new URLSearchParams(event.body || '');
-  const mensaje = params.get('Body')?.trim() || '';
-  const from    = params.get('From') || '';
-  const tel     = normalizarTel(from.replace('whatsapp:',''));
-
-  if (!mensaje) return xml('');
-
-  console.log(`[RECIBIDO] ${from}: ${mensaje.slice(0,60)}`);
-
-  // Comandos admin y login: procesarlos aquí porque son rápidos (sin Claude)
-  if (mensaje.trim() === `/admin${ADMIN_PWD}`) {
-    await fsSet(`admin_sesion/${tel}`, toFields({ activo:true }));
-    await fsSet(`admin_bot/${tel}`,    toFields({ activo:false, modoPrueba:false }));
-    return xml(`✅ Sesión admin iniciada!\n\nEscribe /ayuda para ver los comandos.`, from);
+  let mensaje, from, tel;
+  try {
+    const body = JSON.parse(event.body || '{}');
+    mensaje = body.mensaje;
+    from    = body.from;
+    tel     = body.tel;
+  } catch(e) {
+    console.error('[PROCESAR] Error parseando body:', e.message);
+    return { statusCode:400, body:'bad request' };
   }
 
-  const adminDoc = parseDoc(await fsGet(`admin_sesion/${tel}`));
-  if (adminDoc?.activo && mensaje.startsWith('/')) {
-    const resp = await procesarAdmin(mensaje, tel);
-    return xml(resp, from);
+  if (!mensaje || !from) return { statusCode:400, body:'faltan datos' };
+
+  console.log(`[PROCESAR] ${from}: ${mensaje.slice(0,60)}`);
+
+  try {
+    // ── Admin con bot ON (no comando) ────────────────────────────
+    const adminDoc = parseDoc(await fsGet(`admin_sesion/${tel}`));
+    if (adminDoc?.activo) {
+      const botDoc = parseDoc(await fsGet(`admin_bot/${tel}`));
+      if (!botDoc?.activo) return { statusCode:200, body:'bot off' };
+
+      if (botDoc?.modoPrueba) {
+        const svcsJ    = await fsGet('servicios');
+        const svcs     = (svcsJ.documents||[]).map(parseDoc).filter(Boolean);
+        const estadoP  = await getEstado(`prueba_${tel}`);
+        const clienteP = { id:`prueba_${tel}`, nombre:'Admin (prueba)', telefono: tel, visitas:0, puntos:0 };
+        const r = await responderConClaude(mensaje, [], clienteP, estadoP, svcs);
+        if (r.texto) await enviarWA(from, r.texto);
+        return { statusCode:200, body:'ok' };
+      }
+
+      // Bot ON para admin — respuesta directa
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const r = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514', max_tokens:300,
+        system: 'Eres Zai, asistente de Barbería Zaira. Hablas con la admin Zaira. Responde directo y útil en español mexicano.',
+        messages: [{ role:'user', content: mensaje }],
+      });
+      const texto = r.content[0]?.text?.trim();
+      if (texto) await enviarWA(from, texto);
+      return { statusCode:200, body:'ok' };
+    }
+
+    // ── Buscar/crear cliente ─────────────────────────────────────
+    let cliente = null;
+    const clientesRes = await fsGet('clientes');
+    for (const doc of (clientesRes.documents||[])) {
+      const c = parseDoc(doc);
+      if (!c) continue;
+      if (normalizarTel(c.telefono||'').slice(-8) === tel.slice(-8)) { cliente = c; break; }
+    }
+    if (!cliente) {
+      const ref = await fsPost('clientes', {
+        nombre:   { stringValue: 'Desconocid@' },
+        telefono: { stringValue: tel },
+        email:    { stringValue: '' },
+        notas:    { stringValue: 'Registrad@ automáticamente por WhatsApp' },
+        visitas:  { integerValue: 0 },
+        puntos:   { integerValue: 0 },
+        creadoEn: { timestampValue: new Date().toISOString() },
+      });
+      if (ref?.name) {
+        cliente = { id: ref.name.split('/').pop(), nombre:'Desconocid@', telefono: tel, visitas:0, puntos:0 };
+        await notificarAdmins(`👤 ¡Nuevo contacto!\n📱 +52${tel}\nEdítalo en la app.`);
+      }
+    }
+    if (!cliente) {
+      await enviarWA(from, 'Hola! Bienvenid@ a Barbería Zaira 💅 En breve te atendemos.');
+      return { statusCode:200, body:'ok' };
+    }
+
+    // ── Verificar si bot activo para este cliente ────────────────
+    const botClienteDoc = parseDoc(await fsGet(`config_bot/${cliente.id}`));
+    if (botClienteDoc?.activo === false) {
+      await guardarMsg(cliente.id, 'client', mensaje);
+      return { statusCode:200, body:'bot desactivado para cliente' };
+    }
+
+    // ── Cargar datos en paralelo ─────────────────────────────────
+    const [estado, historial, svcsJson] = await Promise.all([
+      getEstado(cliente.id),
+      getHistorial(cliente.id),
+      fsGet('servicios'),
+    ]);
+    const servicios = (svcsJson.documents||[]).map(parseDoc).filter(Boolean).filter(s => s.nombre);
+
+    await guardarMsg(cliente.id, 'client', mensaje);
+
+    // ── Claude responde ──────────────────────────────────────────
+    const resultado = await responderConClaude(mensaje, historial, cliente, estado, servicios);
+    const respuesta = resultado.texto || 'En este momento no puedo responder. Zaira te atiende en breve 🙏';
+
+    console.log(`[RESPUESTA] ${cliente.nombre}: ${respuesta.slice(0,80)}`);
+
+    // Enviar por Twilio API (no por TwiML — ya salimos del webhook)
+    await enviarWA(from, respuesta);
+    await guardarMsg(cliente.id, 'bot', respuesta);
+
+    return { statusCode:200, body:'ok' };
+
+  } catch(err) {
+    console.error('[PROCESAR ERROR]', err);
+    await enviarWA(from, 'Ahorita no puedo responder. Intenta en un momento 🙏').catch(()=>{});
+    return { statusCode:500, body:'error' };
   }
-
-  // Para todo lo demás: disparar procesar.js en background y responder vacío
-  // Netlify no tiene waitUntil, pero podemos hacer fetch sin await a nuestra propia URL
-  const appUrl = process.env.APP_URL || 'https://zairashair.netlify.app';
-  fetch(`${appUrl}/.netlify/functions/procesar`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mensaje, from, tel }),
-  }).catch(e => console.error('[DISPATCH ERROR]', e.message));
-
-  // Twilio recibe respuesta vacía inmediata — sin timeout
-  return xml('');
 };
-
-function xml(body, to) {
-  const msg = body && to ? `<Message to="${to}"><Body>${body}</Body></Message>` : '';
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'text/xml' },
-    body: `<?xml version="1.0" encoding="UTF-8"?><Response>${msg}</Response>`,
-  };
-}
