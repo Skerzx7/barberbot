@@ -58,6 +58,32 @@ function ProximaCitaBanner({ cita }) {
   );
 }
 
+// Mini gráfica de barras para la semana
+function MiniChart({ data, label }) {
+  const max = Math.max(...data.map(d => d.value), 1);
+  const dias = ['L','M','X','J','V','S','D'];
+  
+  return (
+    <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-lg)', padding:'12px 14px' }}>
+      <div style={{ fontSize:'0.72rem', color:'var(--muted)', marginBottom:10, fontWeight:500 }}>{label}</div>
+      <div style={{ display:'flex', alignItems:'flex-end', gap:6, height:50 }}>
+        {data.map((d, i) => (
+          <div key={i} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:4 }}>
+            <div style={{
+              width:'100%',
+              height: `${Math.max((d.value / max) * 40, 4)}px`,
+              background: d.isToday ? 'var(--gold)' : d.value > 0 ? 'var(--green)' : 'var(--b-subtle)',
+              borderRadius:2,
+              transition:'height 300ms ease',
+            }} />
+            <span style={{ fontSize:'0.55rem', color: d.isToday ? 'var(--gold)' : 'var(--muted)', fontWeight: d.isToday ? 600 : 400 }}>{dias[i]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const {
@@ -80,6 +106,30 @@ export default function Dashboard() {
 
   const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   const days   = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+
+  // Calcular datos para la mini gráfica de la semana
+  const weekChartData = (() => {
+    const data = [];
+    const hoyDia = hoy.getDay();
+    // Empezar desde lunes
+    const inicioSemana = new Date(hoy);
+    inicioSemana.setDate(hoy.getDate() - ((hoyDia + 6) % 7)); // Lunes
+    
+    for (let i = 0; i < 7; i++) {
+      const fecha = new Date(inicioSemana);
+      fecha.setDate(inicioSemana.getDate() + i);
+      const fechaStr = `${fecha.getFullYear()}-${String(fecha.getMonth()+1).padStart(2,'0')}-${String(fecha.getDate()).padStart(2,'0')}`;
+      
+      const citasDelDia = citas.filter(c => c.fechaStr === fechaStr && c.estado === 'completed');
+      const ingresos = citasDelDia.reduce((sum, c) => sum + (Number(c.precio) || 0), 0);
+      
+      data.push({
+        value: ingresos,
+        isToday: fecha.toDateString() === hoy.toDateString(),
+      });
+    }
+    return data;
+  })();
 
   const handleComplete = async (id, nombre) => {
     await completarCita(id);
@@ -146,6 +196,9 @@ export default function Dashboard() {
           accent="#a064ff"
         />
       </div>
+
+      {/* Mini gráfica de ingresos de la semana */}
+      <MiniChart data={weekChartData} label="Ingresos esta semana" />
 
       {/* Citas de hoy */}
       <div>

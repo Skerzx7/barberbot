@@ -1,14 +1,19 @@
 /**
- * BarberBot — Barbería Zaira
- * Arquitectura: Claude maneja TODO el lenguaje natural.
- * La lógica determinista solo hace operaciones en Firestore (verificar, crear, cancelar citas).
- * Claude recibe el estado completo y decide qué hacer con cada mensaje.
+ * BarberBot v3.0 — Barbería Zaira
+ * MEJORAS:
+ * - Debounce 30s para mensajes múltiples
+ * - Reset automático de estado después de 1hr inactivo
+ * - Tool de reagendar cita
+ * - Protección anti-duplicados
+ * - Tono mexicano natural (sin exageraciones)
  */
 
 const Anthropic = require('@anthropic-ai/sdk');
 
 const ADMIN_PWD  = process.env.ADMIN_PASSWORD || '1307';
 const NUMERO_BOT = process.env.TWILIO_SANDBOX_NUMBER || 'whatsapp:+14155238886';
+const DEBOUNCE_MS = 30000; // 30 segundos
+const RESET_ESTADO_MS = 60 * 60 * 1000; // 1 hora
 
 // ── Timezone México ───────────────────────────────────────────────
 function nowMX() {
@@ -22,6 +27,11 @@ function formatFecha(d) {
 }
 function hoyStr() { return formatFecha(hoyMX()); }
 function fechaEsPasada(fs) { return new Date(fs+'T12:00:00') < hoyMX(); }
+function mañanaEsDomingo() {
+  const mx = nowMX();
+  mx.setDate(mx.getDate() + 1);
+  return mx.getDay() === 0;
+}
 
 // ── Firestore REST ────────────────────────────────────────────────
 const PID    = () => process.env.FIREBASE_PROJECT_ID;
@@ -43,6 +53,9 @@ async function fsPost(path, fields) {
     method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fields}),
   });
   return r.json();
+}
+async function fsDelete(path) {
+  await fetch(`${BASE()}/${path}?key=${APIKEY()}`, { method:'DELETE' });
 }
 
 function parseDoc(doc) {
@@ -78,7 +91,7 @@ async function enviarWA(to, body) {
   const auth  = Buffer.from(`${sid}:${token}`).toString('base64');
   const toWA  = to.startsWith('whatsapp:') ? to : `whatsapp:+52${to}`;
   try {
-    console.log(`[ENVIANDO WA] To: ${toWA} | From: ${NUMERO_BOT} | Body: ${body.slice(0,50)}`);
+    console.log(`[ENVIANDO WA] To: ${toWA} | Body: ${body.slice(0,50)}`);
     const res  = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
       method:'POST',
       headers:{ Authorization:`Basic ${auth}`, 'Content-Type':'application/x-www-form-urlencoded' },
@@ -88,7 +101,7 @@ async function enviarWA(to, body) {
     if (res.ok) {
       console.log(`[WA OK] SID: ${data.sid}`);
     } else {
-      console.error(`[WA ERROR] ${res.status}: ${data.message || data.code} | to=${toWA} | from=${NUMERO_BOT}`);
+      console.error(`[WA ERROR] ${res.status}: ${data.message || data.code}`);
     }
   } catch(e) { console.error(`[WA CATCH] ${e.message}`); }
 }
@@ -97,11 +110,40 @@ async function notificarAdmins(msg) {
   for (const t of tels) await enviarWA(t, msg);
 }
 
+// ── Debounce por cliente ──────────────────────────────────────────
+async function getDebounce(clienteId) {
+  try {
+    const doc = parseDoc(await fsGet(`debounce/${clienteId}`));
+    return doc;
+  } catch { return null; }
+}
+async function setDebounce(clienteId, mensajes) {
+  await fsSet(`debounce/${clienteId}`, toFields({
+    mensajes: mensajes.join('\n---\n'),
+    timestamp: new Date().toISOString(),
+    procesando: true,
+  }));
+}
+async function clearDebounce(clienteId) {
+  await fsDelete(`debounce/${clienteId}`);
+}
+
 // ── Estado conversación ───────────────────────────────────────────
 async function getEstado(id) {
   try {
     const doc = parseDoc(await fsGet(`conversacion_estado/${id}`));
-    if (doc) return doc;
+    if (doc) {
+      // Reset automático si lleva más de 1hr sin actividad
+      if (doc.ultimoMensaje) {
+        const ultimo = new Date(doc.ultimoMensaje);
+        const ahora  = new Date();
+        if (ahora - ultimo > RESET_ESTADO_MS && doc.paso !== 'inicio') {
+          console.log(`[RESET ESTADO] Cliente ${id} inactivo ${Math.round((ahora-ultimo)/60000)} min`);
+          return { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'', ultimoMensaje:'' };
+        }
+      }
+      return doc;
+    }
   } catch {}
   return { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'', ultimoMensaje:'' };
 }
@@ -129,13 +171,14 @@ async function guardarMsg(clienteId, de, texto) {
 }
 async function getHistorial(clienteId) {
   try {
+    // Query con orderBy y limit directamente (más eficiente)
     const res  = await fsGet(`clientes/${clienteId}/mensajes`);
     const msgs = (res.documents || []).map(parseDoc).filter(Boolean)
       .sort((a,b) => new Date(a.timestamp||0) - new Date(b.timestamp||0))
-      .slice(-10)
+      .slice(-10) // Solo últimos 10
       .map(m => ({ role: m.de === 'client' ? 'user' : 'assistant', content:(m.texto||'').trim() }))
       .filter(m => m.content);
-    // Garantizar alternancia user/assistant — la API de Anthropic lo requiere
+    // Garantizar alternancia user/assistant
     const alt = [];
     for (const m of msgs) {
       if (alt.length && alt[alt.length-1].role === m.role) alt[alt.length-1] = m;
@@ -152,7 +195,26 @@ async function verificarDisponibilidad(fechaStr, hora) {
   const citas = (res.documents||[]).map(parseDoc).filter(Boolean);
   return !citas.some(c => c.fechaStr === fechaStr && c.hora === hora && c.estado !== 'cancelled');
 }
+
+async function verificarCitaDuplicada(clienteId, fechaStr, hora) {
+  const res   = await fsGet('citas');
+  const citas = (res.documents||[]).map(parseDoc).filter(Boolean);
+  return citas.some(c => 
+    c.clientId === clienteId && 
+    c.fechaStr === fechaStr && 
+    c.hora === hora && 
+    c.estado === 'confirmed'
+  );
+}
+
 async function crearCita(clienteId, nombre, servicio, precio, fechaStr, hora) {
+  // Verificar duplicado antes de crear
+  const duplicada = await verificarCitaDuplicada(clienteId, fechaStr, hora);
+  if (duplicada) {
+    console.log(`[DUPLICADO] Cita ya existe para ${clienteId} en ${fechaStr} ${hora}`);
+    return { duplicada: true };
+  }
+  
   const ref = await fsPost('citas', toFields({
     clientId: clienteId||'', clienteNombre: nombre||'Clienta',
     servicio: servicio||'', precio: Number(precio)||0,
@@ -161,6 +223,14 @@ async function crearCita(clienteId, nombre, servicio, precio, fechaStr, hora) {
   }));
   return ref;
 }
+
+async function getCitasPendientes(clienteId) {
+  const res  = await fsGet('citas');
+  return (res.documents||[]).map(parseDoc).filter(Boolean)
+    .filter(c => c.clientId === clienteId && c.estado === 'confirmed')
+    .sort((a,b) => new Date(a.fechaStr + 'T' + a.hora) - new Date(b.fechaStr + 'T' + b.hora));
+}
+
 async function cancelarCitasPendientes(clienteId) {
   const res  = await fsGet('citas');
   const pend = (res.documents||[]).map(parseDoc).filter(Boolean)
@@ -173,34 +243,46 @@ async function cancelarCitasPendientes(clienteId) {
 const TOOLS = [
   {
     name: 'verificar_horario',
-    description: 'Verifica en tiempo real si un horario específico está disponible antes de ofrecérselo a la clienta.',
+    description: 'Verifica si un horario está disponible. SIEMPRE usarla antes de ofrecer o confirmar un horario.',
     input_schema: {
       type:'object',
       properties: {
         fechaStr: { type:'string', description:'Fecha YYYY-MM-DD' },
-        hora:     { type:'string', description:'Hora HH:MM en 24h, ej: 10:00, 15:30' },
+        hora:     { type:'string', description:'Hora HH:MM en 24h' },
       },
       required: ['fechaStr','hora'],
     },
   },
   {
     name: 'confirmar_cita',
-    description: 'Crea la cita en el sistema cuando la clienta confirmó. Solo llamar después de que la clienta dijo "sí" explícitamente.',
+    description: 'Crea la cita cuando la clienta dijo SÍ explícitamente. Requiere todos los datos.',
     input_schema: {
       type:'object',
       properties: {
-        servicio: { type:'string',  description:'Nombre exacto del servicio de la lista' },
-        precio:   { type:'number',  description:'Precio del servicio' },
-        fechaStr: { type:'string',  description:'Fecha YYYY-MM-DD' },
-        hora:     { type:'string',  description:'Hora HH:MM' },
+        servicio: { type:'string', description:'Nombre del servicio' },
+        precio:   { type:'number', description:'Precio' },
+        fechaStr: { type:'string', description:'Fecha YYYY-MM-DD' },
+        hora:     { type:'string', description:'Hora HH:MM' },
       },
       required: ['servicio','precio','fechaStr','hora'],
     },
   },
   {
     name: 'cancelar_cita',
-    description: 'Cancela la(s) cita(s) activas de esta clienta cuando ella lo pide explícitamente.',
+    description: 'Cancela las citas activas de la clienta.',
     input_schema: { type:'object', properties: {}, required:[] },
+  },
+  {
+    name: 'reagendar_cita',
+    description: 'Cambia la fecha/hora de una cita existente. Usa cuando la clienta quiere mover su cita.',
+    input_schema: {
+      type:'object',
+      properties: {
+        nuevaFechaStr: { type:'string', description:'Nueva fecha YYYY-MM-DD' },
+        nuevaHora:     { type:'string', description:'Nueva hora HH:MM' },
+      },
+      required: ['nuevaFechaStr','nuevaHora'],
+    },
   },
 ];
 
@@ -210,75 +292,65 @@ async function responderConClaude(mensaje, historial, cliente, estado, servicios
 
   const svcsLista = servicios
     .filter(s => s.nombre)
-    .map(s => `- ${s.emoji||'✂️'} ${s.nombre}: $${s.precio} (${s.duracion||30} min)`)
+    .map(s => `- ${s.emoji||'✂️'} ${s.nombre}: $${s.precio}`)
     .join('\n');
 
   const estadoActual = estado.paso !== 'inicio'
     ? `\nCONVERSACIÓN EN CURSO:
 - Paso: ${estado.paso}
-- Servicio seleccionado: ${estado.servicio || 'ninguno'}
+- Servicio: ${estado.servicio || 'ninguno'}
 - Fecha: ${estado.fechaStr || 'ninguna'}
-- Hora: ${estado.hora || 'ninguna'}
-- Precio: ${estado.precio ? '$'+estado.precio : 'ninguno'}`
+- Hora: ${estado.hora || 'ninguna'}`
     : '';
 
-  const citasPendientes = (estado.paso === 'confirmando' && estado.servicio)
-    ? `\n⚠️ HAY UNA CITA PENDIENTE DE CONFIRMAR:
-${estado.emoji||'✂️'} ${estado.servicio} — ${estado.fechaStr} a las ${estado.hora} ($${estado.precio})
-La clienta debe confirmar o cancelar esto.`
+  // Obtener citas pendientes de este cliente
+  const citasPend = await getCitasPendientes(cliente.id);
+  const citasInfo = citasPend.length > 0
+    ? `\n📅 CITAS PENDIENTES DE ESTA CLIENTA:\n${citasPend.map(c => `- ${c.servicio} el ${c.fechaStr} a las ${c.hora}`).join('\n')}`
     : '';
 
-  const system = `Eres Zai, la asistente virtual de Barbería Zaira en México. Eres la secretaria del negocio — respondes por WhatsApp de forma natural, amable y en español mexicano casual.
+  const system = `Eres Zai, asistente de Barbería Zaira. Respondes por WhatsApp.
 
-SOBRE LA BARBERÍA:
-- Nombre: Barbería Zaira
-- Horario: Lunes a sábado de 9am a 7pm. DOMINGOS CERRADO.
-- Hoy es: ${hoyStr()} (${new Date().toLocaleString('es-MX',{timeZone:'America/Mexico_City',weekday:'long'})})
+DATOS:
+- Horario: Lun-Sáb 9am a 7pm. DOMINGOS CERRADO.
+- Hoy: ${hoyStr()} (${nowMX().toLocaleString('es-MX',{timeZone:'America/Mexico_City',weekday:'long'})})
+${mañanaEsDomingo() ? '⚠️ MAÑANA ES DOMINGO — NO ATENDEMOS' : ''}
 
-SERVICIOS DISPONIBLES:
-${svcsLista || '- Corte de cabello: $100\n- Arreglo de barba: $80'}
+SERVICIOS:
+${svcsLista || '- Corte: $100'}
 
-CLIENTE ACTUAL:
-- Nombre: ${cliente.nombre || 'Clienta nueva'}
-- Visitas: ${cliente.visitas || 0}${estadoActual}${citasPendientes}
+CLIENTA: ${cliente.nombre || 'Nueva'} (${cliente.visitas || 0} visitas)${estadoActual}${citasInfo}
 
-CÓMO ERES:
-- Hablas como una mexicana real: "Claro que sí", "Ahorita te ayudo", "¿Qué día te late?", "Sale, perfecto", "Órale"
-- Eres eficiente — vas al punto sin rodeos
-- Usas emojis ocasionalmente pero no en cada oración
-- Máximo 2-3 oraciones por respuesta
-- NUNCA mencionas links ni páginas web
-- NUNCA inventas precios — solo usas los de la lista
-- Si alguien dice "para mi morrito/chamaco/hijo/esposa/mamá" — entiendes que es para otra persona y agendar para ellos
-- Si alguien dice algo de cortesía ("porfavor", "gracias", etc.) en medio de un flujo, retomas amablemente donde ibas
+PERSONALIDAD:
+- Hablas mexicano natural: "Sale", "Va", "Órale", "Ahorita", "Te late?"
+- NO exageras: nada de "¡Órale, qué padre!" o "¡Te va a quedar padrísimo!"
+- Tono tranquilo y directo, como una amiga
+- 2-3 oraciones máximo, sin markdown
+- NUNCA das links
 
-FLUJO DE AGENDAR CITA:
-1. Preguntar servicio (si no lo especificaron)
-2. Preguntar fecha (si no la dijeron)
-3. Preguntar hora (si no la dijeron)
-4. Verificar disponibilidad con la herramienta verificar_horario
-5. Mostrar resumen y pedir confirmación explícita
-6. Cuando confirmen con "sí"/"dale"/"órale" → usar herramienta confirmar_cita
-7. Confirmar al cliente con los detalles
+FLUJO CITAS:
+1. Si no dijeron servicio → preguntar
+2. Si no dijeron fecha → preguntar
+3. Si no dijeron hora → preguntar
+4. SIEMPRE verificar_horario antes de confirmar
+5. Mostrar resumen y pedir "¿Va?"
+6. Solo con "sí/va/dale/órale" → confirmar_cita
 
-REGLAS CRÍTICAS:
-- SIEMPRE usar verificar_horario antes de ofrecer/confirmar un horario específico
-- NUNCA confirmar una cita sin que la clienta haya dicho explícitamente "sí" o equivalente
-- Fechas NUNCA pueden ser anteriores a hoy (${hoyStr()})
-- Si dicen "mañana" y mañana es domingo → decirles que domingos no atendemos y preguntar otro día
-- Si ya hay una cita pendiente de confirmar y saludan → recordarles gentilmente la cita pendiente`;
+REGLAS:
+- Si dicen "mañana" y mañana es domingo → avisar que no atendemos
+- Si quieren cambiar cita → usar reagendar_cita
+- Nunca inventar precios`;
 
   const messages = [...historial, { role:'user', content: mensaje }];
 
   let response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 500,
+    max_tokens: 400,
     system,
     tools: TOOLS,
     messages,
   });
 
-  // Loop de herramientas
   let resultado = { texto: null, accion: null, citaData: null };
   let steps = 0;
 
@@ -295,7 +367,7 @@ REGLAS CRÍTICAS:
         if (!fechaStr || !hora) {
           res = { disponible: false, mensaje: 'Fecha u hora no especificada' };
         } else if (fechaEsPasada(fechaStr)) {
-          res = { disponible: false, mensaje: `Esa fecha ya pasó` };
+          res = { disponible: false, mensaje: 'Esa fecha ya pasó' };
         } else if (new Date(fechaStr+'T12:00:00').getDay() === 0) {
           res = { disponible: false, mensaje: 'Los domingos no atendemos' };
         } else {
@@ -310,22 +382,23 @@ REGLAS CRÍTICAS:
       if (tb.name === 'confirmar_cita') {
         const { servicio, precio, fechaStr, hora } = tb.input;
         try {
-          await crearCita(cliente.id, cliente.nombre, servicio, precio, fechaStr, hora);
-          await setEstado(cliente.id, { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'' });
-          resultado.accion = 'cita_creada';
-          resultado.citaData = { servicio, precio, fechaStr, hora };
-          // Notificar admins
-          const fechaD  = new Date(fechaStr+'T12:00:00');
-          const diasES  = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
-          const mesesES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-          const fechaLeg = `${diasES[fechaD.getDay()]} ${fechaD.getDate()} de ${mesesES[fechaD.getMonth()]}`;
-          const h        = Number(hora.split(':')[0]);
-          const m        = Number(hora.split(':')[1]);
-          const ampm     = h >= 12 ? 'pm' : 'am';
-          const h12      = h > 12 ? h-12 : h === 0 ? 12 : h;
-          const horaLeg  = m === 0 ? `${h12}${ampm}` : `${h12}:${String(m).padStart(2,'0')}${ampm}`;
-          await notificarAdmins(`📅 ¡Nueva cita!\n👤 ${cliente.nombre}\n✂️ ${servicio}\n📅 ${fechaLeg} a las ${horaLeg}\n💰 $${precio}\n📱 ${cliente.telefono||'Sin tel'}`);
-          toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: true }) });
+          const ref = await crearCita(cliente.id, cliente.nombre, servicio, precio, fechaStr, hora);
+          if (ref.duplicada) {
+            toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'Ya tienes una cita en ese horario' }) });
+          } else {
+            await setEstado(cliente.id, { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'' });
+            resultado.accion = 'cita_creada';
+            resultado.citaData = { servicio, precio, fechaStr, hora };
+            // Notificar admins
+            const fechaD  = new Date(fechaStr+'T12:00:00');
+            const diasES  = ['dom','lun','mar','mié','jue','vie','sáb'];
+            const mesesES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+            const fechaLeg = `${diasES[fechaD.getDay()]} ${fechaD.getDate()} ${mesesES[fechaD.getMonth()]}`;
+            const h = Number(hora.split(':')[0]), m = Number(hora.split(':')[1]||0);
+            const horaLeg = `${h > 12 ? h-12 : h}:${String(m).padStart(2,'0')}${h >= 12 ? 'pm' : 'am'}`;
+            await notificarAdmins(`📅 Nueva cita\n${cliente.nombre}\n${servicio} · $${precio}\n${fechaLeg} ${horaLeg}`);
+            toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: true }) });
+          }
         } catch(e) {
           toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: e.message }) });
         }
@@ -336,8 +409,38 @@ REGLAS CRÍTICAS:
           const n = await cancelarCitasPendientes(cliente.id);
           await setEstado(cliente.id, { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'' });
           resultado.accion = 'cita_cancelada';
-          await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita\n📱 ${cliente.telefono||'Sin tel'}`);
+          if (n > 0) await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita`);
           toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: true, canceladas: n }) });
+        } catch(e) {
+          toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: e.message }) });
+        }
+      }
+
+      if (tb.name === 'reagendar_cita') {
+        const { nuevaFechaStr, nuevaHora } = tb.input;
+        try {
+          // Verificar disponibilidad del nuevo horario
+          if (new Date(nuevaFechaStr+'T12:00:00').getDay() === 0) {
+            toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'Los domingos no atendemos' }) });
+            continue;
+          }
+          const libre = await verificarDisponibilidad(nuevaFechaStr, nuevaHora);
+          if (!libre) {
+            toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'Ese horario ya está ocupado' }) });
+            continue;
+          }
+          // Cancelar cita actual y crear nueva
+          const citaActual = (await getCitasPendientes(cliente.id))[0];
+          if (!citaActual) {
+            toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'No tienes citas pendientes' }) });
+            continue;
+          }
+          await fsSet(`citas/${citaActual.id}`, toFields({...citaActual, estado:'cancelled'}));
+          await crearCita(cliente.id, cliente.nombre, citaActual.servicio, citaActual.precio, nuevaFechaStr, nuevaHora);
+          await setEstado(cliente.id, { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'' });
+          resultado.accion = 'cita_reagendada';
+          await notificarAdmins(`🔄 ${cliente.nombre} reagendó\n${citaActual.servicio}\nDe ${citaActual.fechaStr} ${citaActual.hora}\nA ${nuevaFechaStr} ${nuevaHora}`);
+          toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: true }) });
         } catch(e) {
           toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: e.message }) });
         }
@@ -348,7 +451,7 @@ REGLAS CRÍTICAS:
     messages.push({ role:'user',      content: toolResults });
     response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 500,
+      max_tokens: 400,
       system,
       tools: TOOLS,
       messages,
@@ -359,27 +462,16 @@ REGLAS CRÍTICAS:
   return resultado;
 }
 
-// ── Actualizar estado según lo que dijo Claude ────────────────────
-async function actualizarEstado(clienteId, estadoActual, texto) {
-  // Si Claude acaba de crear/cancelar cita, el estado ya fue reseteado en la tool
-  // Solo actualizamos si hay info nueva que extrajimos implícitamente
-  // El estado se gestiona principalmente desde las tools de Claude
-  await setEstado(clienteId, {
-    ...estadoActual,
-    ultimoMensaje: new Date().toISOString(),
-  });
-}
-
 // ── Comandos admin ────────────────────────────────────────────────
 async function procesarAdmin(cmd, tel) {
   const c = cmd.trim().toLowerCase();
-  if (c === '/on')     { await fsSet(`admin_bot/${tel}`, toFields({ activo:true,  modoPrueba:false })); return '✅ Bot ON — te respondo y guardo en app.'; }
-  if (c === '/off')    { await fsSet(`admin_bot/${tel}`, toFields({ activo:false, modoPrueba:false })); return '⛔ Bot OFF — te ignoro.'; }
-  if (c === '/prueba') { await fsSet(`admin_bot/${tel}`, toFields({ activo:true,  modoPrueba:true  })); return '🧪 Modo prueba ON — respondo en WA pero no guardo en app.'; }
+  if (c === '/on')     { await fsSet(`admin_bot/${tel}`, toFields({ activo:true,  modoPrueba:false })); return '✅ Bot ON'; }
+  if (c === '/off')    { await fsSet(`admin_bot/${tel}`, toFields({ activo:false, modoPrueba:false })); return '⛔ Bot OFF'; }
+  if (c === '/prueba') { await fsSet(`admin_bot/${tel}`, toFields({ activo:true,  modoPrueba:true  })); return '🧪 Modo prueba'; }
   if (c === '/salir')  {
     await fsSet(`admin_sesion/${tel}`, toFields({ activo:false }));
     await fsSet(`admin_bot/${tel}`,    toFields({ activo:false, modoPrueba:false }));
-    return '👋 Sesión admin cerrada.';
+    return '👋 Sesión cerrada';
   }
   if (c === '/citas') {
     const hoy  = hoyStr();
@@ -387,14 +479,12 @@ async function procesarAdmin(cmd, tel) {
     const list = (res.documents||[]).map(parseDoc).filter(Boolean)
       .filter(c => c.fechaStr === hoy && c.estado !== 'cancelled')
       .sort((a,b) => (a.hora||'').localeCompare(b.hora||''));
-    if (!list.length) return '📅 Sin citas para hoy.';
-    return `📅 Citas hoy (${list.length}):\n\n` + list.map(c => {
-      const h = Number(c.hora?.split(':')[0]);
-      const m = Number(c.hora?.split(':')[1]||0);
+    if (!list.length) return '📅 Sin citas hoy';
+    return `📅 Hoy (${list.length}):\n` + list.map(c => {
+      const h = Number(c.hora?.split(':')[0]||0);
       const ap = h >= 12 ? 'pm' : 'am';
-      const h12 = h > 12 ? h-12 : h === 0 ? 12 : h;
-      const hl = m === 0 ? `${h12}${ap}` : `${h12}:${String(m).padStart(2,'0')}${ap}`;
-      return `⏰ ${hl} — ${c.clienteNombre} — ${c.servicio}`;
+      const h12 = h > 12 ? h-12 : h || 12;
+      return `${h12}${ap} ${c.clienteNombre} - ${c.servicio}`;
     }).join('\n');
   }
   if (c === '/mañana' || c === '/manana') {
@@ -404,20 +494,14 @@ async function procesarAdmin(cmd, tel) {
     const list = (res.documents||[]).map(parseDoc).filter(Boolean)
       .filter(c => c.fechaStr === str && c.estado !== 'cancelled')
       .sort((a,b) => (a.hora||'').localeCompare(b.hora||''));
-    if (!list.length) return '📅 Sin citas para mañana.';
-    return `📅 Citas mañana (${list.length}):\n\n` + list.map(c => `⏰ ${c.hora} — ${c.clienteNombre} — ${c.servicio}`).join('\n');
+    if (!list.length) return '📅 Sin citas mañana';
+    return `📅 Mañana (${list.length}):\n` + list.map(c => `${c.hora} ${c.clienteNombre}`).join('\n');
   }
-  if (c === '/clientes') {
-    const res = await fsGet('clientes');
-    return `👥 Clientas registradas: ${(res.documents||[]).length}`;
-  }
-  if (c === '/ayuda') return `Comandos disponibles:\n\n/on — Bot responde y guarda\n/off — Bot se calla\n/prueba — Probar sin guardar\n/citas — Citas de hoy\n/mañana — Citas de mañana\n/clientes — Total clientas\n/salir — Cerrar sesión\n/ayuda — Esta lista`;
-  return `Comando no reconocido. Escribe /ayuda.`;
+  if (c === '/ayuda') return `/on — Bot ON\n/off — Bot OFF\n/prueba — Modo test\n/citas — Hoy\n/mañana — Mañana\n/salir — Cerrar`;
+  return 'Comando? Escribe /ayuda';
 }
 
 // ── Handler principal ─────────────────────────────────────────────
-
-// ── Función de procesamiento en background ────────────────────────
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode:405, body:'ok' };
 
@@ -428,7 +512,7 @@ exports.handler = async (event) => {
     from    = body.from;
     tel     = body.tel;
   } catch(e) {
-    console.error('[PROCESAR] Error parseando body:', e.message);
+    console.error('[PROCESAR] Error body:', e.message);
     return { statusCode:400, body:'bad request' };
   }
 
@@ -437,27 +521,26 @@ exports.handler = async (event) => {
   console.log(`[PROCESAR] ${from}: ${mensaje.slice(0,60)}`);
 
   try {
-    // ── Admin con bot ON (no comando) ────────────────────────────
+    // ── Admin check ─────────────────────────────────────────────
     const adminDoc = parseDoc(await fsGet(`admin_sesion/${tel}`));
     if (adminDoc?.activo) {
       const botDoc = parseDoc(await fsGet(`admin_bot/${tel}`));
       if (!botDoc?.activo) return { statusCode:200, body:'bot off' };
 
       if (botDoc?.modoPrueba) {
-        const svcsJ    = await fsGet('servicios');
-        const svcs     = (svcsJ.documents||[]).map(parseDoc).filter(Boolean);
-        const estadoP  = await getEstado(`prueba_${tel}`);
-        const clienteP = { id:`prueba_${tel}`, nombre:'Admin (prueba)', telefono: tel, visitas:0, puntos:0 };
-        const r = await responderConClaude(mensaje, [], clienteP, estadoP, svcs);
+        const svcsJ = await fsGet('servicios');
+        const svcs  = (svcsJ.documents||[]).map(parseDoc).filter(Boolean);
+        const est   = await getEstado(`prueba_${tel}`);
+        const cli   = { id:`prueba_${tel}`, nombre:'Admin', telefono:tel, visitas:0 };
+        const r     = await responderConClaude(mensaje, [], cli, est, svcs);
         if (r.texto) await enviarWA(from, r.texto);
         return { statusCode:200, body:'ok' };
       }
 
-      // Bot ON para admin — respuesta directa
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
       const r = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514', max_tokens:300,
-        system: 'Eres Zai, asistente de Barbería Zaira. Hablas con la admin Zaira. Responde directo y útil en español mexicano.',
+        system: 'Eres Zai, asistente de Barbería Zaira. Hablas con la admin. Responde directo.',
         messages: [{ role:'user', content: mensaje }],
       });
       const texto = r.content[0]?.text?.trim();
@@ -478,29 +561,55 @@ exports.handler = async (event) => {
         nombre:   { stringValue: 'Desconocid@' },
         telefono: { stringValue: tel },
         email:    { stringValue: '' },
-        notas:    { stringValue: 'Registrad@ automáticamente por WhatsApp' },
+        notas:    { stringValue: 'Por WhatsApp' },
         visitas:  { integerValue: 0 },
         puntos:   { integerValue: 0 },
         creadoEn: { timestampValue: new Date().toISOString() },
       });
       if (ref?.name) {
-        cliente = { id: ref.name.split('/').pop(), nombre:'Desconocid@', telefono: tel, visitas:0, puntos:0 };
-        await notificarAdmins(`👤 ¡Nuevo contacto!\n📱 +52${tel}\nEdítalo en la app.`);
+        cliente = { id: ref.name.split('/').pop(), nombre:'Desconocid@', telefono: tel, visitas:0 };
+        await notificarAdmins(`👤 Nuevo contacto: +52${tel}`);
       }
     }
     if (!cliente) {
-      await enviarWA(from, 'Hola! Bienvenid@ a Barbería Zaira 💅 En breve te atendemos.');
+      await enviarWA(from, 'Hola! En breve te atendemos.');
       return { statusCode:200, body:'ok' };
     }
 
-    // ── Verificar si bot activo para este cliente ────────────────
+    // ── Bot activo? ──────────────────────────────────────────────
     const botClienteDoc = parseDoc(await fsGet(`config_bot/${cliente.id}`));
     if (botClienteDoc?.activo === false) {
       await guardarMsg(cliente.id, 'client', mensaje);
-      return { statusCode:200, body:'bot desactivado para cliente' };
+      return { statusCode:200, body:'bot off para cliente' };
     }
 
-    // ── Cargar datos en paralelo ─────────────────────────────────
+    // ── Debounce: esperar 30s por más mensajes ───────────────────
+    const debounceDoc = await getDebounce(cliente.id);
+    if (debounceDoc?.procesando) {
+      // Ya hay un proceso corriendo, agregar mensaje al buffer
+      const msgsActuales = debounceDoc.mensajes ? debounceDoc.mensajes.split('\n---\n') : [];
+      msgsActuales.push(mensaje);
+      await setDebounce(cliente.id, msgsActuales);
+      console.log(`[DEBOUNCE] Agregado al buffer: ${mensaje.slice(0,30)}`);
+      return { statusCode:200, body:'buffered' };
+    }
+
+    // Iniciar proceso con debounce
+    await setDebounce(cliente.id, [mensaje]);
+    
+    // Esperar 30 segundos para más mensajes
+    await new Promise(r => setTimeout(r, DEBOUNCE_MS));
+
+    // Obtener todos los mensajes acumulados
+    const debounceActual = await getDebounce(cliente.id);
+    const mensajesAcumulados = debounceActual?.mensajes?.split('\n---\n') || [mensaje];
+    const mensajeFinal = mensajesAcumulados.join('\n');
+    
+    await clearDebounce(cliente.id);
+
+    console.log(`[DEBOUNCE] Procesando ${mensajesAcumulados.length} mensaje(s)`);
+
+    // ── Cargar datos ─────────────────────────────────────────────
     const [estado, historial, svcsJson] = await Promise.all([
       getEstado(cliente.id),
       getHistorial(cliente.id),
@@ -508,15 +617,17 @@ exports.handler = async (event) => {
     ]);
     const servicios = (svcsJson.documents||[]).map(parseDoc).filter(Boolean).filter(s => s.nombre);
 
-    await guardarMsg(cliente.id, 'client', mensaje);
+    // Guardar mensaje(s) del cliente
+    for (const m of mensajesAcumulados) {
+      await guardarMsg(cliente.id, 'client', m);
+    }
 
     // ── Claude responde ──────────────────────────────────────────
-    const resultado = await responderConClaude(mensaje, historial, cliente, estado, servicios);
-    const respuesta = resultado.texto || 'En este momento no puedo responder. Zaira te atiende en breve 🙏';
+    const resultado = await responderConClaude(mensajeFinal, historial, cliente, estado, servicios);
+    const respuesta = resultado.texto || 'Ahorita no puedo responder. Zaira te atiende en breve.';
 
     console.log(`[RESPUESTA] ${cliente.nombre}: ${respuesta.slice(0,80)}`);
 
-    // Enviar por Twilio API (no por TwiML — ya salimos del webhook)
     await enviarWA(from, respuesta);
     await guardarMsg(cliente.id, 'bot', respuesta);
 
@@ -524,7 +635,7 @@ exports.handler = async (event) => {
 
   } catch(err) {
     console.error('[PROCESAR ERROR]', err);
-    await enviarWA(from, 'Ahorita no puedo responder. Intenta en un momento 🙏').catch(()=>{});
+    await enviarWA(from, 'Ahorita no puedo responder. Intenta en un momento.').catch(()=>{});
     return { statusCode:500, body:'error' };
   }
 };

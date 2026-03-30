@@ -7,3 +7,12 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Scheduled function: recordatorios cada hora
+[functions."recordatorios"]
+  schedule = "0 * * * *"  # Cada hora
+
+# Environment para las functions
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@anthropic-ai/sdk"]

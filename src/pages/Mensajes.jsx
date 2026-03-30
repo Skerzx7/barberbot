@@ -66,11 +66,10 @@ export default function Mensajes() {
   const [loadingBot,  setLoadingBot]  = useState(false);
   const [loadingIA,   setLoadingIA]   = useState(false);
 
-  // Mapa de estado bot por cliente (para mostrar en lista)
-  const [botStates, setBotStates]   = useState({});
-
   const endRef   = useRef(null);
   const inputRef = useRef(null);
+  // Ref para guardar la función de cleanup del listener
+  const unsubRef = useRef(null);
 
   const isMobile = window.innerWidth < 768;
   const cliente  = clientes.find(c => c.id === selectedId);
@@ -86,11 +85,41 @@ export default function Mensajes() {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior:'smooth' }); }, [messages, botTyping]);
   useEffect(() => { if (paramId) setSelectedId(paramId); }, [paramId]);
 
+  // Listener de mensajes con cleanup correcto
   useEffect(() => {
-    if (!selectedId) return;
+    // Limpiar listener anterior SIEMPRE al cambiar de cliente
+    if (unsubRef.current) {
+      unsubRef.current();
+      unsubRef.current = null;
+    }
+
+    if (!selectedId) {
+      setMessages([]);
+      return;
+    }
+
+    // Crear nuevo listener
     const unsub = listenMensajes(selectedId, setMessages);
-    return unsub;
+    unsubRef.current = unsub;
+
+    // Cleanup al desmontar o cambiar de cliente
+    return () => {
+      if (unsubRef.current) {
+        unsubRef.current();
+        unsubRef.current = null;
+      }
+    };
   }, [selectedId]);
+
+  // Cleanup al desmontar el componente
+  useEffect(() => {
+    return () => {
+      if (unsubRef.current) {
+        unsubRef.current();
+        unsubRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -113,6 +142,7 @@ export default function Mensajes() {
   const handleDeleteBotMsg = async (msgId) => {
     try {
       await deleteDoc(doc(db, 'clientes', selectedId, 'mensajes', msgId));
+      showToast('Mensaje borrado', 'info');
     } catch { showToast('Error al borrar mensaje', 'error'); }
   };
 
@@ -186,9 +216,14 @@ export default function Mensajes() {
   const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
   const selectClient = (id) => { setSelectedId(id); navigate(`/mensajes/${id}`); };
 
-  // Último mensaje de cada cliente para el preview en lista
-  const lastMsgs = {};
-  // (no hacemos listener por todos, es costoso — dejamos solo el conteo visual)
+  // Contar mensajes no leídos por cliente (simplificado)
+  const getLastMsgPreview = (clienteId) => {
+    if (clienteId === selectedId && messages.length > 0) {
+      const last = messages[messages.length - 1];
+      return last.texto?.slice(0, 30) + (last.texto?.length > 30 ? '...' : '');
+    }
+    return null;
+  };
 
   return (
     <div style={{ display:'flex', height:`calc(100dvh - var(--topbar) - ${isMobile ? 'var(--botnav)' : '0px'})`, margin: isMobile ? '-20px -16px' : '-28px -32px', overflow:'hidden' }}>
@@ -202,17 +237,22 @@ export default function Mensajes() {
           </div>
           <div style={{ flex:1, overflowY:'auto', padding:6 }}>
             {clientes.length === 0 && <p style={{ fontSize:'0.8rem', color:'var(--muted)', textAlign:'center', padding:20 }}>Sin clientas aún</p>}
-            {clientes.map(c => (
-              <button key={c.id} onClick={() => selectClient(c.id)} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 10px', borderRadius:'var(--r-md)', width:'100%', textAlign:'left', fontFamily:'var(--font-b)', background: c.id===selectedId ? 'var(--gold-bg)' : 'transparent', border: c.id===selectedId ? '1px solid var(--gold-b)' : '1px solid transparent', transition:'background 150ms' }}>
-                <div style={{ width:38, height:38, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-soft)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--gold)', fontFamily:'var(--font-d)', flexShrink:0, fontSize:'1rem' }}>
-                  {(c.nombre||'?')[0]}
-                </div>
-                <div style={{ minWidth:0, flex:1 }}>
-                  <div style={{ fontSize:'0.82rem', fontWeight:500, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.nombre}</div>
-                  <div style={{ fontSize:'0.68rem', color:'var(--muted)', marginTop:1 }}>{c.telefono || 'Sin teléfono'}</div>
-                </div>
-              </button>
-            ))}
+            {clientes.map(c => {
+              const preview = getLastMsgPreview(c.id);
+              return (
+                <button key={c.id} onClick={() => selectClient(c.id)} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 10px', borderRadius:'var(--r-md)', width:'100%', textAlign:'left', fontFamily:'var(--font-b)', background: c.id===selectedId ? 'var(--gold-bg)' : 'transparent', border: c.id===selectedId ? '1px solid var(--gold-b)' : '1px solid transparent', transition:'background 150ms' }}>
+                  <div style={{ width:38, height:38, borderRadius:'50%', background:'var(--overlay)', border:'1px solid var(--b-soft)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--gold)', fontFamily:'var(--font-d)', flexShrink:0, fontSize:'1rem' }}>
+                    {(c.nombre||'?')[0]}
+                  </div>
+                  <div style={{ minWidth:0, flex:1 }}>
+                    <div style={{ fontSize:'0.82rem', fontWeight:500, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{c.nombre}</div>
+                    <div style={{ fontSize:'0.68rem', color:'var(--muted)', marginTop:1, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                      {preview || c.telefono || 'Sin teléfono'}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         </aside>
       )}

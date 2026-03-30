@@ -25,10 +25,24 @@ export default function Configuracion() {
     setForm({ nombre: svc.nombre, precio: String(svc.precio), duracion: String(svc.duracion||30), emoji: svc.emoji||'✂️' });
   };
 
+  // Validar que solo sean números en el precio
+  const handlePrecioChange = (value, setFn) => {
+    // Solo permitir dígitos
+    const soloNumeros = value.replace(/\D/g, '');
+    setFn(f => ({...f, precio: soloNumeros}));
+  };
+
+  // Validar que solo sean números en duración
+  const handleDuracionChange = (value, setFn) => {
+    const soloNumeros = value.replace(/\D/g, '');
+    setFn(f => ({...f, duracion: soloNumeros}));
+  };
+
   const handleGuardar = async (id) => {
     const precio = Number(form.precio);
     if (!form.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
     if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser mayor a 0', 'error'); return; }
+    if (precio > 10000) { showToast('El precio parece muy alto', 'warning'); return; }
     setSaving(true);
     try {
       await guardarServicio(id, { ...form, precio });
@@ -51,6 +65,7 @@ export default function Configuracion() {
     const precio = Number(nuevoForm.precio);
     if (!nuevoForm.nombre?.trim()) { showToast('El nombre es obligatorio', 'error'); return; }
     if (isNaN(precio) || precio <= 0) { showToast('El precio debe ser mayor a 0', 'error'); return; }
+    if (precio > 10000) { showToast('El precio parece muy alto', 'warning'); return; }
     setSaving(true);
     try {
       await guardarServicio(null, { ...nuevoForm, precio });
@@ -73,6 +88,10 @@ export default function Configuracion() {
     return usos * svc.precio;
   };
 
+  // Stats globales
+  const totalIngresos = servicios.reduce((sum, svc) => sum + ingresosPorServicio(svc), 0);
+  const totalCitas = Object.values(usoPorServicio).reduce((a, b) => a + b, 0);
+
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:20, animation:'fadeIn .3s var(--ease) both', maxWidth:640 }}>
 
@@ -91,9 +110,9 @@ export default function Configuracion() {
           </div>
           <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-md)', padding:'10px 12px', textAlign:'center' }}>
             <div style={{ fontFamily:'var(--font-d)', fontSize:'1.3rem', fontWeight:500, color:'var(--blue)' }}>
-              ${Math.round(servicios.reduce((s,x) => s+x.precio, 0) / servicios.length)}
+              ${totalIngresos.toLocaleString()}
             </div>
-            <div style={{ fontSize:'0.65rem', color:'var(--muted)', marginTop:2 }}>Precio promedio</div>
+            <div style={{ fontSize:'0.65rem', color:'var(--muted)', marginTop:2 }}>Ingresos totales</div>
           </div>
         </div>
       )}
@@ -103,6 +122,7 @@ export default function Configuracion() {
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <span>💈</span>
           <h3 style={{ fontFamily:'var(--font-d)', fontSize:'1rem', fontWeight:500, flex:1 }}>Catálogo de servicios</h3>
+          <span style={{ fontSize:'0.68rem', color:'var(--muted)' }}>{totalCitas} citas totales</span>
         </div>
 
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
@@ -132,11 +152,26 @@ export default function Configuracion() {
                       </div>
                       <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
                         <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $</label>
-                        <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} value={form.precio} onChange={e => setForm(f => ({...f, precio:e.target.value}))} />
+                        <input 
+                          type="text" 
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          style={{ ...inp, height:36, width:'100%' }} 
+                          value={form.precio} 
+                          onChange={e => handlePrecioChange(e.target.value, setForm)}
+                          placeholder="100"
+                        />
                       </div>
                       <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
                         <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
-                        <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} value={form.duracion} onChange={e => setForm(f => ({...f, duracion:e.target.value}))} />
+                        <input 
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          style={{ ...inp, height:36, width:'100%' }} 
+                          value={form.duracion} 
+                          onChange={e => handleDuracionChange(e.target.value, setForm)}
+                        />
                       </div>
                     </div>
                     <div style={{ display:'flex', gap:8 }}>
@@ -188,11 +223,27 @@ export default function Configuracion() {
                 </div>
                 <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
                   <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Precio $ *</label>
-                  <input type="number" min="1" style={{ ...inp, height:36, width:'100%' }} placeholder="100" value={nuevoForm.precio} onChange={e => setNuevoForm(f => ({...f, precio:e.target.value}))} />
+                  <input 
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    style={{ ...inp, height:36, width:'100%' }} 
+                    placeholder="100" 
+                    value={nuevoForm.precio} 
+                    onChange={e => handlePrecioChange(e.target.value, setNuevoForm)}
+                  />
                 </div>
                 <div style={{ flex:1, minWidth:70, display:'flex', flexDirection:'column', gap:4 }}>
                   <label style={{ fontSize:'0.7rem', color:'var(--text2)' }}>Min</label>
-                  <input type="number" min="5" style={{ ...inp, height:36, width:'100%' }} placeholder="30" value={nuevoForm.duracion} onChange={e => setNuevoForm(f => ({...f, duracion:e.target.value}))} />
+                  <input 
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    style={{ ...inp, height:36, width:'100%' }} 
+                    placeholder="30" 
+                    value={nuevoForm.duracion} 
+                    onChange={e => handleDuracionChange(e.target.value, setNuevoForm)}
+                  />
                 </div>
               </div>
               <div style={{ display:'flex', gap:8 }}>
@@ -213,20 +264,24 @@ export default function Configuracion() {
         </div>
       </div>
 
-      {/* Reglas Firebase reminder */}
+      {/* Info bot */}
       <div style={{ background:'var(--surface)', border:'1px solid var(--b-subtle)', borderRadius:'var(--r-lg)', padding:14, display:'flex', flexDirection:'column', gap:8 }}>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <span>🔒</span>
-          <h3 style={{ fontFamily:'var(--font-d)', fontSize:'0.9rem', fontWeight:500 }}>Reglas Firebase</h3>
+          <span>🤖</span>
+          <h3 style={{ fontFamily:'var(--font-d)', fontSize:'0.9rem', fontWeight:500 }}>Bot de WhatsApp</h3>
         </div>
         <p style={{ fontSize:'0.75rem', color:'var(--muted)', lineHeight:1.5 }}>
-          Las reglas están en modo abierto para permitir al bot escribir desde el webhook. Antes de lanzar con clientas reales, considera agregar autenticación.
+          El bot usa estos servicios para agendar citas automáticamente. Los precios y nombres se muestran tal cual a las clientas.
         </p>
+        <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginTop:4 }}>
+          <span style={{ fontSize:'0.68rem', padding:'3px 8px', background:'var(--green-bg)', color:'var(--green)', border:'1px solid var(--green-b)', borderRadius:'var(--r-full)' }}>✓ Recordatorios 24h</span>
+          <span style={{ fontSize:'0.68rem', padding:'3px 8px', background:'var(--gold-bg)', color:'var(--gold)', border:'1px solid var(--gold-b)', borderRadius:'var(--r-full)' }}>✓ Agendado automático</span>
+        </div>
       </div>
 
       <div style={{ display:'flex', justifyContent:'space-between', padding:'6px 4px', fontSize:'0.68rem', color:'var(--muted)' }}>
         <span>Barbería Zaira</span>
-        <span style={{ fontFamily:'var(--font-m)' }}>BarberBot v2.1</span>
+        <span style={{ fontFamily:'var(--font-m)' }}>BarberBot v3.0</span>
       </div>
     </div>
   );
