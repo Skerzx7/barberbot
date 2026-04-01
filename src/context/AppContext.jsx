@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc,
   query, orderBy, limit, serverTimestamp, Timestamp,
@@ -87,80 +87,69 @@ export function AppProvider({ children }) {
     return () => { unsubClientes(); unsubCitas(); unsubServicios(); };
   }, []);
 
-  // ── Stats con timezone Mexico ─────────────────────────────────
-  const hoyStr = fechaStrMX();
+  // ── Stats con timezone Mexico (memoizadas — solo recalculan cuando cambian citas/clientes) ──
+  const {
+    hoyStr, mañanaStr,
+    citasHoy, citasMañana, citasPendientesHoy, citasCompletadasHoy,
+    proximaCitaGlobal, ingresosMes, ingresosSemana,
+    citasCompletadasMes, tasaCompletadasMes,
+  } = useMemo(() => {
+    const mx       = nowMX();
+    const hoyStr   = fechaStrMX();
+    const mañanaMX = new Date(mx);
+    mañanaMX.setDate(mañanaMX.getDate() + 1);
+    const mañanaStr = fechaStrMX(mañanaMX);
 
-  const mx = nowMX();
+    const citasHoy            = citas.filter(a => a.fechaStr === hoyStr);
+    const citasMañana         = citas.filter(a => a.fechaStr === mañanaStr && a.estado !== 'cancelled');
+    const citasPendientesHoy  = citasHoy.filter(a => a.estado === 'confirmed');
+    const citasCompletadasHoy = citasHoy.filter(a => a.estado === 'completed');
 
-  // Fecha de mañana
-  const mañanaMX = new Date(mx);
-  mañanaMX.setDate(mañanaMX.getDate() + 1);
-  const mañanaStr = fechaStrMX(mañanaMX);
-
-  const citasHoy     = citas.filter(a => a.fechaStr === hoyStr);
-  const citasMañana  = citas.filter(a => a.fechaStr === mañanaStr && a.estado !== 'cancelled');
-
-  // Citas pendientes de hoy (confirmadas, no completadas ni canceladas)
-  const citasPendientesHoy = citasHoy.filter(a => a.estado === 'confirmed');
-  const citasCompletadasHoy = citasHoy.filter(a => a.estado === 'completed');
-
-  // Próxima cita global (la más próxima en el tiempo)
-  const proximaCitaGlobal = (() => {
-    const ahora = mx;
-    return citas
+    const proximaCitaGlobal = citas
       .filter(a => a.estado === 'confirmed' && a.fechaStr && a.hora)
       .map(a => ({ ...a, dt: new Date(`${a.fechaStr}T${a.hora}`) }))
-      .filter(a => a.dt >= ahora)
+      .filter(a => a.dt >= mx)
       .sort((a, b) => a.dt - b.dt)[0] || null;
-  })();
 
-  const ingresosMes = (() => {
-    return citas
-      .filter(a => {
-        if (a.estado !== 'completed' || !a.fechaStr) return false;
-        const d = new Date(a.fechaStr + 'T12:00:00');
-        return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
-      })
-      .reduce((s, a) => s + (Number(a.precio) || 0), 0);
-  })();
-
-  // Ingresos de la semana actual
-  const ingresosSemana = (() => {
+    const mesActual = mx.getMonth(), añoActual = mx.getFullYear();
     const inicioSemana = new Date(mx);
     inicioSemana.setDate(mx.getDate() - mx.getDay());
-    inicioSemana.setHours(0,0,0,0);
-    return citas
+    inicioSemana.setHours(0, 0, 0, 0);
+
+    const citasMes = citas.filter(a => {
+      if (!a.fechaStr) return false;
+      const d = new Date(a.fechaStr + 'T12:00:00');
+      return d.getMonth() === mesActual && d.getFullYear() === añoActual;
+    });
+
+    const ingresosMes = citasMes
+      .filter(a => a.estado === 'completed')
+      .reduce((s, a) => s + (Number(a.precio) || 0), 0);
+
+    const ingresosSemana = citas
       .filter(a => {
         if (a.estado !== 'completed' || !a.fechaStr) return false;
-        const d = new Date(a.fechaStr + 'T12:00:00');
-        return d >= inicioSemana;
+        return new Date(a.fechaStr + 'T12:00:00') >= inicioSemana;
       })
       .reduce((s, a) => s + (Number(a.precio) || 0), 0);
-  })();
 
-  const citasCompletadasMes = (() => {
-    return citas.filter(a => {
-      if (a.estado !== 'completed' || !a.fechaStr) return false;
-      const d = new Date(a.fechaStr + 'T12:00:00');
-      return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
-    }).length;
-  })();
+    const citasCompletadasMes = citasMes.filter(a => a.estado === 'completed').length;
+    const totalMes = citasMes.filter(a => a.estado !== 'cancelled').length;
+    const tasaCompletadasMes = totalMes ? Math.round((citasCompletadasMes / totalMes) * 100) : 0;
 
-  // Tasa de completadas (vs total no canceladas del mes)
-  const tasaCompletadasMes = (() => {
-    const total = citas.filter(a => {
-      if (!a.fechaStr || a.estado === 'cancelled') return false;
-      const d = new Date(a.fechaStr + 'T12:00:00');
-      return d.getMonth() === mx.getMonth() && d.getFullYear() === mx.getFullYear();
-    }).length;
-    if (!total) return 0;
-    return Math.round((citasCompletadasMes / total) * 100);
-  })();
+    return {
+      hoyStr, mañanaStr,
+      citasHoy, citasMañana, citasPendientesHoy, citasCompletadasHoy,
+      proximaCitaGlobal, ingresosMes, ingresosSemana,
+      citasCompletadasMes, tasaCompletadasMes,
+    };
+  }, [citas]);
 
   // Cliente con más visitas
-  const clienteTop = clientes.reduce((top, c) => {
-    return (c.visitas || 0) > (top?.visitas || 0) ? c : top;
-  }, null);
+  const clienteTop = useMemo(
+    () => clientes.reduce((top, c) => ((c.visitas||0) > (top?.visitas||0) ? c : top), null),
+    [clientes]
+  );
 
   // ── CRUD Clientes ─────────────────────────────────────────────
   const agregarCliente = async (data) => {

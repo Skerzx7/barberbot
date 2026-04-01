@@ -40,7 +40,22 @@ const BASE   = () => `https://firestore.googleapis.com/v1/projects/${PID()}/data
 
 async function fsGet(path) {
   const r = await fetch(`${BASE()}/${path}?key=${APIKEY()}`);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(`Firestore ${r.status} (${path}): ${e.error?.message || r.statusText}`);
+  }
   return r.json();
+}
+// Structured query (orderBy + limit) para subcolecciones
+async function fsRunQuery(parent, structuredQuery) {
+  const url = `${BASE()}/${parent}:runQuery?key=${APIKEY()}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery }),
+  });
+  if (!r.ok) throw new Error(`Firestore runQuery ${r.status}`);
+  return r.json(); // array de { document, readTime }
 }
 async function fsSet(path, fields) {
   const r = await fetch(`${BASE()}/${path}?key=${APIKEY()}`, {
@@ -171,11 +186,16 @@ async function guardarMsg(clienteId, de, texto) {
 }
 async function getHistorial(clienteId) {
   try {
-    // Query con orderBy y limit directamente (más eficiente)
-    const res  = await fsGet(`clientes/${clienteId}/mensajes`);
-    const msgs = (res.documents || []).map(parseDoc).filter(Boolean)
-      .sort((a,b) => new Date(a.timestamp||0) - new Date(b.timestamp||0))
-      .slice(-10) // Solo últimos 10
+    // runQuery con orderBy timestamp DESC + limit 10 — evita descargar todos los docs
+    const results = await fsRunQuery(`clientes/${clienteId}`, {
+      from: [{ collectionId: 'mensajes' }],
+      orderBy: [{ field: { fieldPath: 'timestamp' }, direction: 'DESCENDING' }],
+      limit: 10,
+    });
+    const msgs = results
+      .map(r => parseDoc(r.document))
+      .filter(Boolean)
+      .reverse() // DESCENDING → volvemos a cronológico
       .map(m => ({ role: m.de === 'client' ? 'user' : 'assistant', content:(m.texto||'').trim() }))
       .filter(m => m.content);
     // Garantizar alternancia user/assistant
@@ -189,53 +209,43 @@ async function getHistorial(clienteId) {
   } catch { return []; }
 }
 
-// ── Citas ─────────────────────────────────────────────────────────
-async function verificarDisponibilidad(fechaStr, hora) {
-  const res   = await fsGet('citas');
-  const citas = (res.documents||[]).map(parseDoc).filter(Boolean);
+// ── Citas — funciones síncronas (reciben citas ya cargadas) ───────
+// citas se carga UNA vez en Promise.all del handler y se pasa a todas las funciones
+function verificarDisponibilidad(citas, fechaStr, hora) {
   return !citas.some(c => c.fechaStr === fechaStr && c.hora === hora && c.estado !== 'cancelled');
 }
 
-async function verificarCitaDuplicada(clienteId, fechaStr, hora) {
-  const res   = await fsGet('citas');
-  const citas = (res.documents||[]).map(parseDoc).filter(Boolean);
-  return citas.some(c => 
-    c.clientId === clienteId && 
-    c.fechaStr === fechaStr && 
-    c.hora === hora && 
-    c.estado === 'confirmed'
+function verificarCitaDuplicada(citas, clienteId, fechaStr, hora) {
+  return citas.some(c =>
+    c.clientId === clienteId &&
+    c.fechaStr === fechaStr &&
+    c.hora     === hora &&
+    c.estado   === 'confirmed'
   );
 }
 
-async function crearCita(clienteId, nombre, servicio, precio, fechaStr, hora) {
-  // Verificar duplicado antes de crear
-  const duplicada = await verificarCitaDuplicada(clienteId, fechaStr, hora);
-  if (duplicada) {
+async function crearCita(citas, clienteId, nombre, servicio, precio, fechaStr, hora) {
+  if (verificarCitaDuplicada(citas, clienteId, fechaStr, hora)) {
     console.log(`[DUPLICADO] Cita ya existe para ${clienteId} en ${fechaStr} ${hora}`);
     return { duplicada: true };
   }
-  
-  const ref = await fsPost('citas', toFields({
+  return fsPost('citas', toFields({
     clientId: clienteId||'', clienteNombre: nombre||'Clienta',
     servicio: servicio||'', precio: Number(precio)||0,
     duracion: 30, hora: hora||'', fechaStr: fechaStr||'',
     estado: 'confirmed', creadoEn: new Date().toISOString(),
   }));
-  return ref;
 }
 
-async function getCitasPendientes(clienteId) {
-  const res  = await fsGet('citas');
-  return (res.documents||[]).map(parseDoc).filter(Boolean)
+function getCitasPendientes(citas, clienteId) {
+  return citas
     .filter(c => c.clientId === clienteId && c.estado === 'confirmed')
     .sort((a,b) => new Date(a.fechaStr + 'T' + a.hora) - new Date(b.fechaStr + 'T' + b.hora));
 }
 
-async function cancelarCitasPendientes(clienteId) {
-  const res  = await fsGet('citas');
-  const pend = (res.documents||[]).map(parseDoc).filter(Boolean)
-    .filter(c => c.clientId === clienteId && c.estado === 'confirmed');
-  for (const c of pend) await fsSet(`citas/${c.id}`, toFields({...c, estado:'cancelled'}));
+async function cancelarCitasPendientes(citas, clienteId) {
+  const pend = citas.filter(c => c.clientId === clienteId && c.estado === 'confirmed');
+  await Promise.all(pend.map(c => fsSet(`citas/${c.id}`, toFields({...c, estado:'cancelled'}))));
   return pend.length;
 }
 
@@ -287,7 +297,7 @@ const TOOLS = [
 ];
 
 // ── CEREBRO: Claude maneja todo el lenguaje natural ───────────────
-async function responderConClaude(mensaje, historial, cliente, estado, servicios) {
+async function responderConClaude(mensaje, historial, cliente, estado, servicios, citas) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   const svcsLista = servicios
@@ -303,8 +313,8 @@ async function responderConClaude(mensaje, historial, cliente, estado, servicios
 - Hora: ${estado.hora || 'ninguna'}`
     : '';
 
-  // Obtener citas pendientes de este cliente
-  const citasPend = await getCitasPendientes(cliente.id);
+  // Obtener citas pendientes de este cliente (síncrono, citas ya cargadas)
+  const citasPend = getCitasPendientes(citas, cliente.id);
   const citasInfo = citasPend.length > 0
     ? `\n📅 CITAS PENDIENTES DE ESTA CLIENTA:\n${citasPend.map(c => `- ${c.servicio} el ${c.fechaStr} a las ${c.hora}`).join('\n')}`
     : '';
@@ -371,7 +381,7 @@ REGLAS:
         } else if (new Date(fechaStr+'T12:00:00').getDay() === 0) {
           res = { disponible: false, mensaje: 'Los domingos no atendemos' };
         } else {
-          const libre = await verificarDisponibilidad(fechaStr, hora);
+          const libre = verificarDisponibilidad(citas, fechaStr, hora);
           res = libre
             ? { disponible: true, fechaStr, hora }
             : { disponible: false, mensaje: `El horario ${hora} del ${fechaStr} ya está ocupado` };
@@ -382,7 +392,7 @@ REGLAS:
       if (tb.name === 'confirmar_cita') {
         const { servicio, precio, fechaStr, hora } = tb.input;
         try {
-          const ref = await crearCita(cliente.id, cliente.nombre, servicio, precio, fechaStr, hora);
+          const ref = await crearCita(citas, cliente.id, cliente.nombre, servicio, precio, fechaStr, hora);
           if (ref.duplicada) {
             toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'Ya tienes una cita en ese horario' }) });
           } else {
@@ -406,7 +416,7 @@ REGLAS:
 
       if (tb.name === 'cancelar_cita') {
         try {
-          const n = await cancelarCitasPendientes(cliente.id);
+          const n = await cancelarCitasPendientes(citas, cliente.id);
           await setEstado(cliente.id, { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'' });
           resultado.accion = 'cita_cancelada';
           if (n > 0) await notificarAdmins(`⚠️ ${cliente.nombre} canceló su cita`);
@@ -424,19 +434,19 @@ REGLAS:
             toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'Los domingos no atendemos' }) });
             continue;
           }
-          const libre = await verificarDisponibilidad(nuevaFechaStr, nuevaHora);
+          const libre = verificarDisponibilidad(citas, nuevaFechaStr, nuevaHora);
           if (!libre) {
             toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'Ese horario ya está ocupado' }) });
             continue;
           }
           // Cancelar cita actual y crear nueva
-          const citaActual = (await getCitasPendientes(cliente.id))[0];
+          const citaActual = getCitasPendientes(citas, cliente.id)[0];
           if (!citaActual) {
             toolResults.push({ type:'tool_result', tool_use_id: tb.id, content: JSON.stringify({ ok: false, error: 'No tienes citas pendientes' }) });
             continue;
           }
           await fsSet(`citas/${citaActual.id}`, toFields({...citaActual, estado:'cancelled'}));
-          await crearCita(cliente.id, cliente.nombre, citaActual.servicio, citaActual.precio, nuevaFechaStr, nuevaHora);
+          await crearCita(citas, cliente.id, cliente.nombre, citaActual.servicio, citaActual.precio, nuevaFechaStr, nuevaHora);
           await setEstado(cliente.id, { paso:'inicio', servicio:'', precio:0, emoji:'', fechaStr:'', hora:'' });
           resultado.accion = 'cita_reagendada';
           await notificarAdmins(`🔄 ${cliente.nombre} reagendó\n${citaActual.servicio}\nDe ${citaActual.fechaStr} ${citaActual.hora}\nA ${nuevaFechaStr} ${nuevaHora}`);
@@ -609,13 +619,15 @@ exports.handler = async (event) => {
 
     console.log(`[DEBOUNCE] Procesando ${mensajesAcumulados.length} mensaje(s)`);
 
-    // ── Cargar datos ─────────────────────────────────────────────
-    const [estado, historial, svcsJson] = await Promise.all([
+    // ── Cargar datos en paralelo (1 round-trip por colección) ────
+    const [estado, historial, svcsJson, citasJson] = await Promise.all([
       getEstado(cliente.id),
       getHistorial(cliente.id),
       fsGet('servicios'),
+      fsGet('citas'),
     ]);
     const servicios = (svcsJson.documents||[]).map(parseDoc).filter(Boolean).filter(s => s.nombre);
+    const citas     = (citasJson.documents||[]).map(parseDoc).filter(Boolean);
 
     // Guardar mensaje(s) del cliente
     for (const m of mensajesAcumulados) {
@@ -623,7 +635,7 @@ exports.handler = async (event) => {
     }
 
     // ── Claude responde ──────────────────────────────────────────
-    const resultado = await responderConClaude(mensajeFinal, historial, cliente, estado, servicios);
+    const resultado = await responderConClaude(mensajeFinal, historial, cliente, estado, servicios, citas);
     const respuesta = resultado.texto || 'Ahorita no puedo responder. Zaira te atiende en breve.';
 
     console.log(`[RESPUESTA] ${cliente.nombre}: ${respuesta.slice(0,80)}`);

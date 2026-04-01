@@ -116,20 +116,20 @@ exports.handler = async (event) => {
       // Mensaje de recordatorio
       const mensaje = `Hola ${(cliente.nombre || 'cliente').split(' ')[0]}! 👋\n\nTe recordamos tu cita de mañana:\n\n✂️ ${cita.servicio}\n⏰ ${horaLeg}\n📍 Barbería Zaira\n\n¿Te vemos mañana? Responde "sí" para confirmar o "no" si necesitas cancelar.`;
 
-      const ok = await enviarWA(cliente.telefono, mensaje);
-      
+      const [ok] = await Promise.all([
+        enviarWA(cliente.telefono, mensaje),
+        new Promise(r => setTimeout(r, 1000)), // rate limit Twilio: 1/seg
+      ]);
+
       if (ok) {
-        // Marcar como enviado
-        await fsSet(`citas/${cita.id}`, toFields({
+        // Marcar como enviado (fire-and-forget, no bloquea el loop)
+        fsSet(`citas/${cita.id}`, toFields({
           ...cita,
           recordatorioEnviado: true,
           recordatorioFecha: new Date().toISOString(),
-        }));
+        })).catch(e => console.error(`[RECORDATORIOS] fsSet error ${cita.id}:`, e.message));
         enviados++;
       }
-
-      // Rate limit: máximo 1 por segundo
-      await new Promise(r => setTimeout(r, 1000));
     }
 
     console.log(`[RECORDATORIOS] ${enviados} recordatorios enviados`);
